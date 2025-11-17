@@ -1,16 +1,17 @@
-# Start from the official Airflow image version specified in your docker-compose.yaml
-ARG AIRFLOW_VERSION=2.10.4
-FROM apache/airflow:${AIRFLOW_VERSION}
+# ... existing content ...
 
-# Switch to the root user to copy requirements (needed for permission)
+# Switch to the root user temporarily to install system dependencies (Terraform)
 USER root
-COPY requirements.txt .
 
-# --- CRITICAL CHANGE HERE ---
-# Switch to the Airflow user (${AIRFLOW_UID}) before running pip install
+# Install Terraform (Example for Alpine/Debian base)
+# You may need to adapt these commands based on the Airflow image base OS.
+# For Alpine (common in Airflow images):
+RUN apk add --no-cache curl \
+    && curl -LO https://releases.hashicorp.com/terraform/1.7.5/terraform_1.7.5_linux_amd64.zip \
+    && unzip terraform_1.7.5_linux_amd64.zip -d /usr/bin/ \
+    && rm terraform_1.7.5_linux_amd64.zip
+
+# Switch back to the Airflow user (${AIRFLOW_UID})
 USER ${AIRFLOW_UID} 
+COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
-# No need to switch back, as the entrypoint handles user switching later
-
-# If you had other system-level installs (e.g., apt install), you'd sandwich them 
-# between 'USER root' and 'USER ${AIRFLOW_UID}'.
