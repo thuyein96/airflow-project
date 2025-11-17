@@ -120,25 +120,6 @@ services:
       start_period: 30s
     restart: always
   
-  rabbitmq:
-    image: rabbitmq:3-management-alpine
-    hostname: rabbitmq
-    environment:
-      RABBITMQ_DEFAULT_USER: airflow
-      RABBITMQ_DEFAULT_PASS: airflow
-      RABBITMQ_DEFAULT_VHOST: /
-    ports:
-      # Port for the management UI (Optional, but useful)
-      - '15672:15672' 
-    healthcheck:
-      test: ["CMD", "rabbitmq-diagnostics", "ping"]
-      interval: 30s
-      timeout: 30s
-      retries: 3
-    volumes:
-      - rabbitmq-data-volume:/var/lib/rabbitmq
-    restart: always
-
   airflow-webserver:
     <<: *airflow-common
     command: webserver
@@ -314,6 +295,5 @@ services:
 
 volumes:
   postgres-db-volume:
-  rabbitmq-data-volume:
 
 
