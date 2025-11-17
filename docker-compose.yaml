@@ -55,6 +55,8 @@ x-airflow-common: &airflow-common
   image: ${AIRFLOW_IMAGE_NAME:-apache/airflow:2.10.4}
   # build: .
   environment: &airflow-common-env
+    AIRFLOW__SCHEDULER__MIN_FILE_PROCESS_INTERVAL: 60
+    AIRFLOW__SCHEDULER__SCHEDULER_HEALTH_CHECK_THRESHOLD: 240
     AIRFLOW__WEBSERVER__BASE_URL: http://localhost:8080/airflow
     AIRFLOW__WEBSERVER__WEB_SERVER_URL_PREFIX: /airflow
     AIRFLOW__CORE__EXECUTOR: CeleryExecutor
@@ -293,4 +295,5 @@ services:
 
 volumes:
   postgres-db-volume:
+
 
