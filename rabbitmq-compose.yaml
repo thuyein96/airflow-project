@@ -23,11 +23,3 @@ services:
 
 volumes:
   rabbitmq-data-volume:
-
-networks:
-  default:
-    # IMPORTANT: Use the name of the network created by your main docker-compose.yaml
-    # Docker Compose usually names networks: <project_name>_default
-    # Assuming your project name is 'airflow-project', the network is 'airflow-project_default'
-    external: true
-    name: airflow-project_default
