@@ -23,28 +23,28 @@ default_args = {
 # Step 1: RabbitMQ Consumer
 # -------------------------
 
-# def rabbitmq_consumer():
-#     load_dotenv(expanduser('/opt/airflow/dags/.env'))
-#     rabbit_url = os.getenv("RABBITMQ_URL")
-#     rabbit_url = "amqp://guest:guest@host.docker.internal:5672"
-#     if not rabbit_url:
-#         raise ValueError("RABBITMQ_URL is not set in .env")
+def rabbitmq_consumer():
+    load_dotenv(expanduser('/airflow/dags/.env'))
+    rabbit_url = os.getenv("RABBITMQ_URL")
+    rabbit_url = "amqp://airflow:airflow@airflow_rabbitmq_broker:5672" #"amqp://guest:guest@host.docker.internal:5672"
+    if not rabbit_url:
+        raise ValueError("RABBITMQ_URL is not set in .env")
 
-#     connection = pika.BlockingConnection(pika.URLParameters(rabbit_url))
-#     channel = connection.channel()
+    connection = pika.BlockingConnection(pika.URLParameters(rabbit_url))
+    channel = connection.channel()
 
-#     method_frame, header_frame, body = channel.basic_get(queue='request', auto_ack=True)
-#     if method_frame:
-#         message = body.decode()
-#         obj = json.loads(message)
-#         request_id = obj["data"]["requestId"]
-#         print(f"[x] Got message: {request_id}")
-#         connection.close()
-#         return request_id
-#     else:
-#         print("[x] No message in queue")
-#         connection.close()
-#         return None
+    method_frame, header_frame, body = channel.basic_get(queue='request', auto_ack=True)
+    if method_frame:
+        message = body.decode()
+        obj = json.loads(message)
+        request_id = obj["data"]["requestId"]
+        print(f"[x] Got message: {request_id}")
+        connection.close()
+        return request_id
+    else:
+        print("[x] No message in queue")
+        connection.close()
+        return None
 
 # -------------------------
 # Step 2: Fetch from Supabase
@@ -56,7 +56,7 @@ def fetch_from_database(**context):
     if not request_id:
         raise ValueError("No message received from RabbitMQ. Stop DAG run.")
 
-    load_dotenv(os.path.expanduser('/opt/airflow/dags/.env'))
+    load_dotenv(os.path.expanduser('/airflow/dags/.env'))
 
     USER = os.getenv("DB_USER")
     PASSWORD = os.getenv("DB_PASSWORD")
@@ -159,7 +159,7 @@ def write_terraform_db_files(terraform_dir, configInfo):
     database_resources = ensure_list(config_dict.get("databaseInstance"), db_keys)
     for db in database_resources:
         db["name"] = f"{db['name']}-{db['resourceConfigId'][:4]}"
-    load_dotenv(expanduser('/opt/airflow/dags/.env'))
+    load_dotenv(expanduser('/airflow/dags/.env'))
 
     # -------------------------
     # terraform.auto.tfvars
@@ -182,7 +182,7 @@ def write_terraform_db_files(terraform_dir, configInfo):
     # -------------------------
     # variables.tf
     # -------------------------
-    load_dotenv(expanduser('/opt/airflow/dags/.env'))
+    load_dotenv(expanduser('/airflow/dags/.env'))
 
     variables_tf_content = f"""
         variable "subscription_id" {{
@@ -310,7 +310,7 @@ def write_to_db(terraform_dir, configInfo):
     if not vm_output_file.exists():
         raise FileNotFoundError(f"Terraform state file not found at {vm_output_file}")
 
-    load_dotenv(expanduser('/opt/airflow/dags/.env'))
+    load_dotenv(expanduser('/airflow/dags/.env'))
 
     USER = os.getenv("DB_USER")
     PASSWORD = os.getenv("DB_PASSWORD")

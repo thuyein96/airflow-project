@@ -9,7 +9,7 @@ from airflow.operators.bash import BashOperator
 from datetime import datetime, timedelta
 from dotenv import load_dotenv
 from os.path import expanduser
-load_dotenv(expanduser('/opt/airflow/dags/.env'))
+load_dotenv(expanduser('/airflow/dags/.env'))
 
 # -------------------------
 # Default DAG args
@@ -25,7 +25,7 @@ default_args = {
 # Step 1: RabbitMQ consumer
 # -------------------------
 def rabbitmq_consumer():
-    load_dotenv(expanduser('/opt/airflow/dags/.env'))
+    load_dotenv(expanduser('/airflow/dags/.env'))
     rabbit_url = os.getenv("RABBITMQ_URL")
     if not rabbit_url:
         raise ValueError("RABBITMQ_URL is not set in .env")
@@ -50,7 +50,7 @@ def rabbitmq_consumer():
 # Step 2: Get repository/project name
 # -------------------------
 def repository_name(request_id):
-    load_dotenv(expanduser('/opt/airflow/dags/.env'))
+    load_dotenv(expanduser('/airflow/dags/.env'))
 
     USER = os.getenv("DB_USER")
     PASSWORD = os.getenv("DB_PASSWORD")
@@ -92,7 +92,7 @@ def cleanup_directory(projectName):
     return projectName
 
 def supabase_delete_request(request_id):
-    load_dotenv(expanduser('/opt/airflow/dags/.env'))
+    load_dotenv(expanduser('/airflow/dags/.env'))
 
     USER = os.getenv("DB_USER")
     PASSWORD = os.getenv("DB_PASSWORD")
@@ -181,7 +181,7 @@ def supabase_delete_request(request_id):
         connection.close()
 
 def branch_resources(request_id):
-    load_dotenv(expanduser('/opt/airflow/dags/.env'))
+    load_dotenv(expanduser('/airflow/dags/.env'))
 
     USER = os.getenv("DB_USER")
     PASSWORD = os.getenv("DB_PASSWORD")
