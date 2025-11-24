@@ -57,7 +57,7 @@ x-airflow-common: &airflow-common
   environment: &airflow-common-env
     AIRFLOW__SCHEDULER__MIN_FILE_PROCESS_INTERVAL: 60
     AIRFLOW__SCHEDULER__SCHEDULER_HEALTH_CHECK_THRESHOLD: 240
-    AIRFLOW__WEBSERVER__BASE_URL: http://localhost:8080/airflow
+    AIRFLOW__WEBSERVER__BASE_URL: http://20.2.248.253:8080/airflow
     AIRFLOW__WEBSERVER__WEB_SERVER_URL_PREFIX: /airflow
     AIRFLOW__CORE__EXECUTOR: CeleryExecutor
     AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow@postgres/airflow
