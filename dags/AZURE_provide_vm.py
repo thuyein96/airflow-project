@@ -25,25 +25,25 @@ default_args = {
 # -------------------------
 # Step 1: RabbitMQ Consumer
 # -------------------------
-def rabbitmq_consumer():
-    load_dotenv(expanduser('/airflow/dags/.env'))
-    rabbit_url = "amqp://airflow:airflow@airflow_rabbitmq_broker:5672" #"amqp://guest:guest@host.docker.internal:5672"
+# def rabbitmq_consumer():
+#     load_dotenv(expanduser('/airflow/dags/.env'))
+#     rabbit_url = "amqp://airflow:airflow@airflow_rabbitmq_broker:5672" #"amqp://guest:guest@host.docker.internal:5672"
 
-    connection = pika.BlockingConnection(pika.URLParameters(rabbit_url))
-    channel = connection.channel()
+#     connection = pika.BlockingConnection(pika.URLParameters(rabbit_url))
+#     channel = connection.channel()
 
-    method_frame, _, body = channel.basic_get(queue='request', auto_ack=True)
-    if method_frame:
-        message = body.decode()
-        obj = json.loads(message)
-        request_id = obj["data"]["requestId"]
-        print(f"[x] Got message: {request_id}")
-        connection.close()
-        return request_id
-    else:
-        print("[x] No message in queue")
-        connection.close()
-        return None
+#     method_frame, _, body = channel.basic_get(queue='request', auto_ack=True)
+#     if method_frame:
+#         message = body.decode()
+#         obj = json.loads(message)
+#         request_id = obj["data"]["requestId"]
+#         print(f"[x] Got message: {request_id}")
+#         connection.close()
+#         return request_id
+#     else:
+#         print("[x] No message in queue")
+#         connection.close()
+#         return None
 
 # -------------------------
 # Step 2: Fetch from Supabase
