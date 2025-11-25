@@ -170,7 +170,7 @@ services:
       # See https://airflow.apache.org/docs/docker-stack/entrypoint.html#signal-propagation
       DUMB_INIT_SETSID: '0'
     env_file:
-      - .env
+      - /opt/airflow/dags/.env
     restart: always
     depends_on:
       <<: *airflow-common-depends-on
