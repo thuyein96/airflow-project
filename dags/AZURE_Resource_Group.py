@@ -25,28 +25,28 @@ default_args = {
 # -------------------------
 # Step 1: RabbitMQ consumer
 # -------------------------
-# def rabbitmq_consumer():
-#     load_dotenv(expanduser('/airflow/dags/.env'))
-#     rabbit_url = os.getenv("RABBITMQ_URL")
-#     # rabbit_url = "amqp://guest:guest@host.docker.internal:5672"
-#     if not rabbit_url:
-#         raise ValueError("RABBITMQ_URL is not set in .env")
+def rabbitmq_consumer():
+    load_dotenv(expanduser('/airflow/dags/.env'))
+    rabbit_url = os.getenv("RABBITMQ_URL")
+    # rabbit_url = "amqp://guest:guest@host.docker.internal:5672"
+    if not rabbit_url:
+        raise ValueError("RABBITMQ_URL is not set in .env")
 
-#     connection = pika.BlockingConnection(pika.URLParameters(rabbit_url))
-#     channel = connection.channel()
+    connection = pika.BlockingConnection(pika.URLParameters(rabbit_url))
+    channel = connection.channel()
 
-#     method_frame, header_frame, body = channel.basic_get(queue='request', auto_ack=True)
-#     if method_frame:
-#         message = body.decode()
-#         obj = json.loads(message)
-#         request_id = obj["data"]["requestId"]
-#         print(f"[x] Got message: {request_id}")
-#         connection.close()
-#         return request_id
-#     else:
-#         print("[x] No message in queue")
-#         connection.close()
-#         return None
+    method_frame, header_frame, body = channel.basic_get(queue='request', auto_ack=True)
+    if method_frame:
+        message = body.decode()
+        obj = json.loads(message)
+        request_id = obj["data"]["requestId"]
+        print(f"[x] Got message: {request_id}")
+        connection.close()
+        return request_id
+    else:
+        print("[x] No message in queue")
+        connection.close()
+        return None
 
 
 # -------------------------
@@ -233,10 +233,10 @@ with DAG(
 ) as dag:
 
     # Step 1: RabbitMQ
-    # get_request_id = PythonOperator(
-    #     task_id="get_request_id",
-    #     python_callable=rabbitmq_consumer,
-    # )
+    get_request_id = PythonOperator(
+        task_id="get_request_id",
+        python_callable=rabbitmq_consumer,
+    )
 
     # Step 2: DB
     get_config_info = PythonOperator(
@@ -304,5 +304,4 @@ with DAG(
     end = EmptyOperator(task_id="end")
 
     # Workflow
-    #get_request_id >> 
-    get_config_info >> create_tf_dir >> write_tf_files >> terraform_apply >> branch_task >> [trigger_vm, trigger_db, trigger_st] >> end
+    get_request_id >> get_config_info >> create_tf_dir >> write_tf_files >> terraform_apply >> branch_task >> [trigger_vm, trigger_db, trigger_st] >> end
