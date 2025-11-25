@@ -225,7 +225,7 @@ resource "azurerm_subnet" "subnet" {{
 # Create public IPs for each VM
 resource "azurerm_public_ip" "public_ip" {{
   for_each = {{ for vm in var.vm_resources : vm.id => vm }}
-
+  sku                 = "Standard"
   name                = "publicip-${{each.value.name}}"
   location            = local.rg_location
   resource_group_name = local.rg_name
