@@ -57,7 +57,7 @@ def fetch_from_database(**context):
     if not request_id:
         raise ValueError("No message received from RabbitMQ. Stop DAG run.")
 
-    load_dotenv(expanduser('/airflow/dags/.env'))
+    load_dotenv(expanduser('/opt/airflow/dags/.env'))
     USER = os.getenv("DB_USER")
     PASSWORD = os.getenv("DB_PASSWORD")
     HOST = os.getenv("DB_HOST")
