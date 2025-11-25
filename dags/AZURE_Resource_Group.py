@@ -233,10 +233,10 @@ with DAG(
 ) as dag:
 
     # Step 1: RabbitMQ
-    get_request_id = PythonOperator(
-        task_id="get_request_id",
-        python_callable=rabbitmq_consumer,
-    )
+    # get_request_id = PythonOperator(
+    #     task_id="get_request_id",
+    #     python_callable=rabbitmq_consumer,
+    # )
 
     # Step 2: DB
     get_config_info = PythonOperator(
