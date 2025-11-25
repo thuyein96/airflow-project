@@ -304,4 +304,5 @@ with DAG(
     end = EmptyOperator(task_id="end")
 
     # Workflow
-    get_request_id >> get_config_info >> create_tf_dir >> write_tf_files >> terraform_apply >> branch_task >> [trigger_vm, trigger_db, trigger_st] >> end
+    #get_request_id >> 
+    get_config_info >> create_tf_dir >> write_tf_files >> terraform_apply >> branch_task >> [trigger_vm, trigger_db, trigger_st] >> end
