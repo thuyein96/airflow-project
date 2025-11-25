@@ -26,7 +26,7 @@ default_args = {
 # Step 1: RabbitMQ Consumer
 # -------------------------
 # def rabbitmq_consumer():
-#     load_dotenv(expanduser('/airflow/dags/.env'))
+#     load_dotenv(expanduser('/opt/airflow/dags/.env'))
 #     rabbit_url = "amqp://airflow:airflow@airflow_rabbitmq_broker:5672" #"amqp://guest:guest@host.docker.internal:5672"
 
 #     connection = pika.BlockingConnection(pika.URLParameters(rabbit_url))
@@ -166,7 +166,7 @@ def write_terraform_files(terraform_dir, configInfo, public_key_path: list):
         vm_dict["vmSize"] = vm_size[0]
         vm_resources.append(vm_dict)
 
-    load_dotenv(expanduser('/airflow/dags/.env'))
+    load_dotenv(expanduser('/opt/airflow/dags/.env'))
  # terraform.auto.tfvars
     tfvars_content = f"""
 subscription_id      = "{os.getenv('AZURE_SUBSCRIPTION_ID')}"
@@ -225,7 +225,6 @@ resource "azurerm_subnet" "subnet" {{
 # Create public IPs for each VM
 resource "azurerm_public_ip" "public_ip" {{
   for_each = {{ for vm in var.vm_resources : vm.id => vm }}
-  sku                 = "Standard"
   name                = "publicip-${{each.value.name}}"
   location            = local.rg_location
   resource_group_name = local.rg_name
@@ -287,7 +286,7 @@ output "public_ip" {{
     with open(f"{terraform_dir}/main.tf", "w") as f:
         f.write(main_tf_content)
 
-    load_dotenv(expanduser('/airflow/dags/.env'))
+    load_dotenv(expanduser('/opt/airflow/dags/.env'))
 
     import ast
     public_key_path = ast.literal_eval(public_key_path)
@@ -344,7 +343,7 @@ def write_to_db(terraform_dir, configInfo):
     if not vm_output_file.exists():
         raise FileNotFoundError(f"Terraform state file not found at {vm_output_file}")
 
-    load_dotenv(expanduser('/airflow/dags/.env'))
+    load_dotenv(expanduser('/opt/airflow/dags/.env'))
 
     USER = os.getenv("DB_USER")
     PASSWORD = os.getenv("DB_PASSWORD")

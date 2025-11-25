@@ -26,7 +26,7 @@ default_args = {
 # Step 1: RabbitMQ consumer
 # -------------------------
 def rabbitmq_consumer():
-    load_dotenv(expanduser('/airflow/dags/.env'))
+    load_dotenv(expanduser('/opt/airflow/dags/.env'))
     rabbit_url = os.getenv("RABBITMQ_URL")
     # rabbit_url = "amqp://guest:guest@host.docker.internal:5672"
     if not rabbit_url:
@@ -56,7 +56,7 @@ def fetch_from_database(request_id):
     if not request_id:
         raise ValueError("No message received from RabbitMQ. Stop DAG run.")
 
-    load_dotenv(expanduser('/airflow/dags/.env'))
+    load_dotenv(expanduser('/opt/airflow/dags/.env'))
 
     USER = os.getenv("DB_USER")
     PASSWORD = os.getenv("DB_PASSWORD")

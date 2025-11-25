@@ -25,7 +25,7 @@ default_args = {
 # -------------------------
 
 # def rabbitmq_consumer():
-#     load_dotenv(expanduser('/airflow/dags/.env'))
+#     load_dotenv(expanduser('/opt/airflow/dags/.env'))
 #     rabbit_url = os.getenv("RABBITMQ_URL")
 #     rabbit_url = "amqp://airflow:airflow@airflow_rabbitmq_broker:5672" #"amqp://guest:guest@host.docker.internal:5672"
 #     if not rabbit_url:
@@ -164,7 +164,7 @@ def write_terraform_storage_files(terraform_dir, configInfo):
     # -------------------------
     # terraform.auto.tfvars
     # -------------------------
-    load_dotenv(expanduser('/airflow/dags/.env'))
+    load_dotenv(expanduser('/opt/airflow/dags/.env'))
     tfvars_content = f"""
 subscription_id      = "{os.getenv('AZURE_SUBSCRIPTION_ID')}"
 client_id            = "{os.getenv('AZURE_CLIENT_ID')}"
@@ -280,7 +280,7 @@ def write_to_db(terraform_dir, configInfo):
     if not vm_output_file.exists():
         raise FileNotFoundError(f"Terraform state file not found at {vm_output_file}")
 
-    load_dotenv(expanduser('/airflow/dags/.env'))
+    load_dotenv(expanduser('/opt/airflow/dags/.env'))
 
     USER = os.getenv("DB_USER")
     PASSWORD = os.getenv("DB_PASSWORD")

@@ -6,7 +6,7 @@ from dotenv import load_dotenv
 
 def load_environment():
     # Load env file inside container
-    load_dotenv('/airflow/dags/.env')
+    load_dotenv('/opt/airflow/dags/.env')
     port = os.getenv('PORT')
     print("Environment variable PORT set:", port)
 

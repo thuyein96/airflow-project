@@ -32,7 +32,7 @@ def fetch_from_database(**context):
         raise ValueError("No message received. Stop DAG run.")
 
     # Load environment variables
-    load_dotenv(expanduser('/airflow/dags/.env'))
+    load_dotenv(expanduser('/opt/airflow/dags/.env'))
 
     USER = os.getenv("DB_USER")
     PASSWORD = os.getenv("DB_PASSWORD")
@@ -143,7 +143,7 @@ def write_terraform_files(configInfo, terraform_dir):
         ]
 
         project_name = to_bucket_name(config_dict['project_name'], config_dict['region'])
-        load_dotenv(expanduser('/airflow/dags/.env'))
+        load_dotenv(expanduser('/opt/airflow/dags/.env'))
 
      # terraform.auto.tfvars
     tfvars_content = f"""
@@ -278,7 +278,7 @@ def write_to_db(terraform_dir, configInfo):
     if not vm_output_file.exists():
         raise FileNotFoundError(f"Terraform state file not found at {vm_output_file}")
 
-    load_dotenv(expanduser('/airflow/dags/.env'))
+    load_dotenv(expanduser('/opt/airflow/dags/.env'))
 
     USER = os.getenv("DB_USER")
     PASSWORD = os.getenv("DB_PASSWORD")
