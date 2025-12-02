@@ -53,32 +53,15 @@ def fetch_from_database(**context):
         raise ValueError(f"No request found for id={request_id}")
     resourcesId, repositoryId = res
 
-    cursor.execute(
-        'SELECT "resourceConfigId", "resourceGroupId" FROM "Resources" WHERE id = %s;',
-        (resourcesId,)
-    )
-    row = cursor.fetchone()
-    if not row:
+    cursor.execute('''
+        SELECT "name", "region", "resourceConfigId"
+        FROM "Resources" WHERE id = %s;
+    ''', (resourcesId,))
+    resource = cursor.fetchone()
+    if not resource:
         raise ValueError(f"No resource found for resourcesId={resourcesId}")
-    resourceConfigId, resourceGroupId = row
 
-    cursor.execute(
-        'SELECT "name" FROM "Repository" WHERE id = %s;',
-        (repositoryId,)
-    )
-    row = cursor.fetchone()
-    if not row:
-        raise ValueError(f"No repository found for id={repositoryId}")
-    projectName = row[0]
-
-    cursor.execute(
-        'SELECT "resourceGroupName", "location" FROM "AzureResourceGroup" WHERE id = %s;',
-        (resourceGroupId,)
-    )
-    row = cursor.fetchone()
-    if not row:
-        raise ValueError(f"No resource group found for id={resourceGroupId}")
-    resourceGroupName, location = row
+    repoName, region, resourceConfigId = resource
 
     cursor.execute(
         'SELECT "id", "clusterName", "nodeCount", "nodeSize" '
@@ -104,9 +87,8 @@ def fetch_from_database(**context):
 
     configInfo = {
         "resourcesId": resourcesId,
-        "project_name": projectName,
-        "resource_group": resourceGroupName,
-        "location": location,
+        "repoName": repoName,
+        "region": region,
         "k8s_clusters": cluster_list
     }
     return configInfo
@@ -115,8 +97,8 @@ def create_terraform_directory(configInfo):
     if isinstance(configInfo, str):
         configInfo = ast.literal_eval(configInfo)
         
-    projectName = configInfo['project_name']
-    terraform_dir = f"/opt/airflow/dags/terraform/{projectName}/k8s"
+    repoName = configInfo['repoName']
+    terraform_dir = f"/opt/airflow/dags/terraform/{repoName}/k8s"
     os.makedirs(terraform_dir, exist_ok=True)
     return terraform_dir
 
@@ -125,7 +107,7 @@ def write_terraform_files(terraform_dir, configInfo):
         configInfo = ast.literal_eval(configInfo)
         
     config_dict = configInfo
-    projectName = f"{config_dict['project_name']}"
+    projectName = f"{config_dict['repoName']}-{config_dict['resourcesId'][:4]}"
     k8s_clusters = config_dict['k8s_clusters']
 
     load_dotenv(expanduser('/opt/airflow/dags/.env'))
@@ -136,8 +118,7 @@ subscription_id  = "{os.getenv('AZURE_SUBSCRIPTION_ID')}"
 client_id        = "{os.getenv('AZURE_CLIENT_ID')}"
 client_secret    = "{os.getenv('AZURE_CLIENT_SECRET')}"
 tenant_id        = "{os.getenv('AZURE_TENANT_ID')}"
-resource_group   = "{config_dict['resource_group']}"
-location         = "{config_dict['location']}"
+project_location = "{config_dict['region']}"
 project_name     = "{projectName}"
 k8s_clusters     = {json.dumps(k8s_clusters, indent=4)}
 """
@@ -168,7 +149,7 @@ provider "azurerm" {{
 }}
 
 data "azurerm_resource_group" "rg" {{
-  name = var.resource_group
+  name = var.project_name
 }}
 
 # Virtual Network for AKS
@@ -265,15 +246,10 @@ variable "tenant_id" {{
   type        = string
 }}
 
-variable "resource_group" {{
-  description = "Resource Group Name"
-  type        = string
-}}
-
-variable "location" {{
+variable "project_location" {{
   description = "Azure Location"
   type        = string
-  default     = "{config_dict['location']}"
+  default     = "{config_dict['region']}"
 }}
 
 variable "project_name" {{
@@ -338,18 +314,17 @@ def write_to_db(terraform_dir, configInfo):
         # Find the cluster resource in terraform state
         for resource in k8s_state.get('resources', []):
             if resource.get('type') == 'azurerm_kubernetes_cluster' and resource.get('name') == 'aks_cluster':
-                for instance_key, instance in resource.get('instances', [{}])[0].get('attributes', {}).items():
-                    if isinstance(instance, dict):
-                        # Extract kubeconfig
-                        kube_config_raw = instance.get('kube_config_raw', '')
-                        cluster_fqdn = instance.get('fqdn', '')
-                        
-                        # Update each cluster individually
-                        cursor.execute(
-                            'UPDATE "AzureK8sCluster" SET "kubeConfig" = %s, "clusterFqdn" = %s, "terraformState" = %s WHERE "id" = %s;',
-                            (kube_config_raw, cluster_fqdn, json.dumps(k8s_state), cluster_id)
-                        )
-                        break
+                for instance in resource.get('instances', []):
+                    attributes = instance.get('attributes', {})
+                    # Extract kubeconfig
+                    kube_config_raw = attributes.get('kube_config_raw', '')
+                    cluster_fqdn = attributes.get('fqdn', '')
+                    
+                    # Update each cluster individually
+                    cursor.execute(
+                        'UPDATE "AzureK8sCluster" SET "kubeConfig" = %s, "clusterFqdn" = %s, "terraformState" = %s WHERE "id" = %s;',
+                        (kube_config_raw, cluster_fqdn, json.dumps(k8s_state), cluster_id)
+                    )
     
     connection.commit()
     cursor.close()
