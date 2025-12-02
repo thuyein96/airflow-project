@@ -390,7 +390,7 @@ with DAG(
 
     # Task dependencies
     get_request_id >> get_repository_name >> branch_task
-    branch_task >> [destroy_vm, destroy_db, destroy_st, destroy_k8s] >> destroy_rg >> cleanup_dir >> delete_request
+    branch_task >> [destroy_vm, destroy_db, destroy_st, destroy_k8s] >> cleanup_dir >> delete_request
 
 
 
