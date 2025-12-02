@@ -366,7 +366,10 @@ with DAG(
         task_id="terraform_cleanup",
         bash_command=(
             "cd {{ ti.xcom_pull(task_ids='create_terraform_dir') }} && "
-            "rm -f .terraform.tfstate.lock.info || true"
+            "if [ -f .terraform.tfstate.lock.info ]; then "
+            "  LOCK_ID=$(cat .terraform.tfstate.lock.info | grep -oP '(?<=\"ID\":\")[^\"]*') && "
+            "  terraform force-unlock -force $LOCK_ID || true; "
+            "fi"
         ),
     )
 
