@@ -362,6 +362,14 @@ with DAG(
         bash_command="cd {{ ti.xcom_pull(task_ids='create_terraform_dir') }} && terraform init",
     )
 
+    terraform_cleanup = BashOperator(
+        task_id="terraform_cleanup",
+        bash_command=(
+            "cd {{ ti.xcom_pull(task_ids='create_terraform_dir') }} && "
+            "rm -f .terraform.tfstate.lock.info || true"
+        ),
+    )
+
     terraform_apply = BashOperator(
         task_id="terraform_apply",
         bash_command="cd {{ ti.xcom_pull(task_ids='create_terraform_dir') }} && terraform apply -auto-approve",
