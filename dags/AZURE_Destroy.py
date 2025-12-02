@@ -351,8 +351,10 @@ with DAG(
     destroy_k8s = BashOperator(
         task_id="terraform_destroy_k8s",
         bash_command=(
+            'if [ -d "/opt/airflow/dags/terraform/{{ ti.xcom_pull(task_ids=\'get_repository_name\') | trim | replace(\'"\',\'\') }}/k8s" ]; then '
             'cd "/opt/airflow/dags/terraform/{{ ti.xcom_pull(task_ids=\'get_repository_name\') | trim | replace(\'"\',\'\') }}/k8s" && '
-            'terraform init && terraform destroy -auto-approve'
+            'terraform init && terraform destroy -auto-approve; '
+            'else echo "K8s directory not found, skipping destroy"; fi'
         ),
         retries=3,
         retry_delay=timedelta(minutes=5)
