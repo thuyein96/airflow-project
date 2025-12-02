@@ -163,7 +163,7 @@ def branch_resources(request_id):
             branches.append('terraform_destroy_k8s')
         
         # Always destroy resource group last
-        branches.append('terraform_destroy_rg')
+        # branches.append('terraform_destroy_rg')
         
         if not branches:
             return 'end'
