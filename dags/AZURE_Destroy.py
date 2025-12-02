@@ -260,12 +260,12 @@ def supabase_delete_request(request_id):
             print(f"Deleted AzureK8sCluster with resourceConfigId={resourceConfigId}")
 
         # Delete Azure Resource Group
-        cursor.execute('SELECT * FROM "AzureResourceGroup" WHERE "resourceConfigId" = %s;', (resourceConfigId,))
-        res = cursor.fetchall()
-        if res:
-            cursor.execute('DELETE FROM "AzureResourceGroup" WHERE "resourceConfigId" = %s;', (resourceConfigId,))
-            connection.commit()
-            print(f"Deleted AzureResourceGroup with resourceConfigId={resourceConfigId}")
+        # cursor.execute('SELECT * FROM "AzureResourceGroup" WHERE "resourceConfigId" = %s;', (resourceConfigId,))
+        # res = cursor.fetchall()
+        # if res:
+        #     cursor.execute('DELETE FROM "AzureResourceGroup" WHERE "resourceConfigId" = %s;', (resourceConfigId,))
+        #     connection.commit()
+        #     print(f"Deleted AzureResourceGroup with resourceConfigId={resourceConfigId}")
 
         # Delete Resources
         cursor.execute('DELETE FROM "Resources" WHERE id = %s;', (resourcesId,))
@@ -314,66 +314,56 @@ with DAG(
         retry_delay=timedelta(minutes=5)
     )
 
-    # Destroy Azure VMs - handle missing directory
+    # Destroy Azure VMs (same as existing)
     destroy_vm = BashOperator(
         task_id="terraform_destroy_vm",
         bash_command=(
-            'if [ -d "/opt/airflow/dags/terraform/{{ ti.xcom_pull(task_ids=\'get_repository_name\') | trim | replace(\'"\',\'\') }}/vm" ]; then '
             'cd "/opt/airflow/dags/terraform/{{ ti.xcom_pull(task_ids=\'get_repository_name\') | trim | replace(\'"\',\'\') }}/vm" && '
-            'terraform init && terraform destroy -auto-approve; '
-            'else echo "VM directory not found, skipping destroy"; fi'
+            'terraform init && terraform destroy -auto-approve'
         ),
         retries=3,
         retry_delay=timedelta(minutes=5)
     )
 
-    # Destroy Azure Databases - handle missing directory
+    # Destroy Azure Databases (same as existing)
     destroy_db = BashOperator(
         task_id="terraform_destroy_db",
         bash_command=(
-            'if [ -d "/opt/airflow/dags/terraform/{{ ti.xcom_pull(task_ids=\'get_repository_name\') | trim | replace(\'"\',\'\') }}/db" ]; then '
             'cd "/opt/airflow/dags/terraform/{{ ti.xcom_pull(task_ids=\'get_repository_name\') | trim | replace(\'"\',\'\') }}/db" && '
-            'terraform init && terraform destroy -auto-approve; '
-            'else echo "DB directory not found, skipping destroy"; fi'
+            'terraform init && terraform destroy -auto-approve'
         ),
         retries=3,
         retry_delay=timedelta(minutes=5)
     )
 
-    # Destroy Azure Storage - handle missing directory
+    # Destroy Azure Storage (same as existing)
     destroy_st = BashOperator(
         task_id="terraform_destroy_st",
         bash_command=(
-            'if [ -d "/opt/airflow/dags/terraform/{{ ti.xcom_pull(task_ids=\'get_repository_name\') | trim | replace(\'"\',\'\') }}/st" ]; then '
             'cd "/opt/airflow/dags/terraform/{{ ti.xcom_pull(task_ids=\'get_repository_name\') | trim | replace(\'"\',\'\') }}/st" && '
-            'terraform init && terraform destroy -auto-approve; '
-            'else echo "Storage directory not found, skipping destroy"; fi'
+            'terraform init && terraform destroy -auto-approve'
         ),
         retries=3,
         retry_delay=timedelta(minutes=5)
     )
 
-    # Destroy AKS Clusters - handle missing directory
+    # Destroy AKS Clusters (mimicking VM/DB/Storage pattern)
     destroy_k8s = BashOperator(
         task_id="terraform_destroy_k8s",
         bash_command=(
-            'if [ -d "/opt/airflow/dags/terraform/{{ ti.xcom_pull(task_ids=\'get_repository_name\') | trim | replace(\'"\',\'\') }}/k8s" ]; then '
             'cd "/opt/airflow/dags/terraform/{{ ti.xcom_pull(task_ids=\'get_repository_name\') | trim | replace(\'"\',\'\') }}/k8s" && '
-            'terraform init && terraform destroy -auto-approve; '
-            'else echo "K8s directory not found, skipping destroy"; fi'
+            'terraform init && terraform destroy -auto-approve'
         ),
         retries=3,
         retry_delay=timedelta(minutes=5)
     )
 
-    # Destroy Azure Resource Group - handle missing directory
+    # Destroy Azure Resource Group (must be last)
     destroy_rg = BashOperator(
         task_id="terraform_destroy_rg",
         bash_command=(
-            'if [ -d "/opt/airflow/dags/terraform/{{ ti.xcom_pull(task_ids=\'get_repository_name\') | trim | replace(\'"\',\'\') }}/resource_group" ]; then '
             'cd "/opt/airflow/dags/terraform/{{ ti.xcom_pull(task_ids=\'get_repository_name\') | trim | replace(\'"\',\'\') }}/resource_group" && '
-            'terraform init && terraform destroy -auto-approve; '
-            'else echo "Resource Group directory not found, skipping destroy"; fi'
+            'terraform init && terraform destroy -auto-approve'
         ),
         retries=3,
         retry_delay=timedelta(minutes=5),
