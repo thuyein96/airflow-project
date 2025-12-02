@@ -118,6 +118,13 @@ def fetch_from_database(request_id):
     st_instances = cursor.fetchall()
     st_count = len(st_instances)
 
+    cursor.execute(
+        '''SELECT id FROM "AzureK8sCluster" WHERE "resourceConfigId" = %s;''',
+        (resourceConfigId,)
+    )
+    k8s_instances = cursor.fetchall()
+    k8s_count = len(k8s_instances)
+
     cursor.close()
     connection.close()
 
@@ -128,7 +135,8 @@ def fetch_from_database(request_id):
         "cloudProvider": cloudProvider,
         "vmCount": vm_count,
         "dbCount": db_count,
-        "stCount": st_count
+        "stCount": st_count,
+        "k8sCount": k8s_count
     }
 
     return json.dumps(configInfo)
@@ -217,6 +225,8 @@ def branch_resources(configInfo):
         branches.append('trigger_db')
     if data['stCount'] > 0:
         branches.append('trigger_st')
+    if data['k8sCount'] > 0:
+        branches.append('trigger_aks')
     if not branches:
         return 'end'
     return branches
@@ -301,7 +311,16 @@ with DAG(
         trigger_rule='all_success',
     )
 
+    # Trigger AKS DAG
+    trigger_aks = TriggerDagRunOperator(
+        task_id="trigger_aks",
+        trigger_dag_id="AZURE_terraform_k8s_provision",
+        conf={"request_id": "{{ ti.xcom_pull(task_ids='get_request_id') }}"},
+        wait_for_completion=False,
+        trigger_rule='all_success',
+    )
+
     end = EmptyOperator(task_id="end")
 
     # Workflow
-    get_request_id >> get_config_info >> create_tf_dir >> write_tf_files >> terraform_apply >> branch_task >> [trigger_vm, trigger_db, trigger_st] >> end
+    get_request_id >> get_config_info >> create_tf_dir >> write_tf_files >> terraform_apply >> branch_task >> [trigger_vm, trigger_db, trigger_st, trigger_aks] >> end
