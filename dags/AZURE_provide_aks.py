@@ -190,9 +190,7 @@ resource "azurerm_kubernetes_cluster" "aks_cluster" {{
     node_count          = each.value.node_count
     vm_size             = each.value.node_size
     vnet_subnet_id      = azurerm_subnet.aks_subnet.id
-    enable_auto_scaling = true
-    min_count           = 1
-    max_count           = each.value.node_count + 2
+    enable_auto_scaling = false
   }}
   
   identity {{
