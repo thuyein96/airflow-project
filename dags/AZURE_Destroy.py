@@ -359,16 +359,16 @@ with DAG(
     )
 
     # Destroy Azure Resource Group (must be last)
-    destroy_rg = BashOperator(
-        task_id="terraform_destroy_rg",
-        bash_command=(
-            'cd "/opt/airflow/dags/terraform/{{ ti.xcom_pull(task_ids=\'get_repository_name\') | trim | replace(\'"\',\'\') }}/resource_group" && '
-            'terraform init && terraform destroy -auto-approve'
-        ),
-        retries=3,
-        retry_delay=timedelta(minutes=5),
-        trigger_rule='none_failed_min_one_success'
-    )
+    # destroy_rg = BashOperator(
+    #     task_id="terraform_destroy_rg",
+    #     bash_command=(
+    #         'cd "/opt/airflow/dags/terraform/{{ ti.xcom_pull(task_ids=\'get_repository_name\') | trim | replace(\'"\',\'\') }}/resource_group" && '
+    #         'terraform init && terraform destroy -auto-approve'
+    #     ),
+    #     retries=3,
+    #     retry_delay=timedelta(minutes=5),
+    #     trigger_rule='none_failed_min_one_success'
+    # )
 
     # Cleanup folder
     cleanup_dir = PythonOperator(
