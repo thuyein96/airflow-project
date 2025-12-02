@@ -125,7 +125,7 @@ k8s_clusters     = {json.dumps(k8s_clusters, indent=4)}
     with open(f"{terraform_dir}/terraform.auto.tfvars", "w") as f:
         f.write(tfvars_content)
 
-    # main.tf
+    # main.tf - CREATE OR USE EXISTING VNET
     main_tf_content = f"""
 terraform {{
   required_providers {{
@@ -152,23 +152,31 @@ data "azurerm_resource_group" "rg" {{
   name = var.project_name
 }}
 
-# Virtual Network for AKS
+# Try to get existing VNet, create if doesn't exist
 resource "azurerm_virtual_network" "aks_vnet" {{
   name                = "${{var.project_name}}-aks-vnet"
   location            = data.azurerm_resource_group.rg.location
   resource_group_name = data.azurerm_resource_group.rg.name
-  address_space       = ["10.0.0.0/16"]
+  address_space       = ["10.1.0.0/16"]
+  
+  lifecycle {{
+    ignore_changes = [tags]
+  }}
 }}
 
-# Subnet for AKS
+# Try to get existing Subnet, create if doesn't exist
 resource "azurerm_subnet" "aks_subnet" {{
   name                 = "${{var.project_name}}-aks-subnet"
   resource_group_name  = data.azurerm_resource_group.rg.name
   virtual_network_name = azurerm_virtual_network.aks_vnet.name
-  address_prefixes     = ["10.0.1.0/24"]
+  address_prefixes     = ["10.1.0.0/24"]
+  
+  lifecycle {{
+    ignore_changes = [delegation]
+  }}
 }}
 
-# AKS Clusters
+# AKS Clusters - All share the same VNet/Subnet
 resource "azurerm_kubernetes_cluster" "aks_cluster" {{
   for_each = {{ for cluster in var.k8s_clusters : cluster.id => cluster }}
   
@@ -192,17 +200,11 @@ resource "azurerm_kubernetes_cluster" "aks_cluster" {{
   }}
   
   network_profile {{
-    network_plugin    = "azure"
-    load_balancer_sku = "standard"
+    network_plugin     = "azure"
+    load_balancer_sku  = "standard"
+    service_cidr       = "10.2.0.0/16"
+    dns_service_ip     = "10.2.0.10"
   }}
-}}
-
-# Kubernetes Provider Configuration
-provider "kubernetes" {{
-  host                   = azurerm_kubernetes_cluster.aks_cluster[keys(azurerm_kubernetes_cluster.aks_cluster)[0]].kube_config.0.host
-  client_certificate     = base64decode(azurerm_kubernetes_cluster.aks_cluster[keys(azurerm_kubernetes_cluster.aks_cluster)[0]].kube_config.0.client_certificate)
-  client_key             = base64decode(azurerm_kubernetes_cluster.aks_cluster[keys(azurerm_kubernetes_cluster.aks_cluster)[0]].kube_config.0.client_key)
-  cluster_ca_certificate = base64decode(azurerm_kubernetes_cluster.aks_cluster[keys(azurerm_kubernetes_cluster.aks_cluster)[0]].kube_config.0.cluster_ca_certificate)
 }}
 
 # Output cluster information
@@ -223,7 +225,7 @@ output "cluster_fqdns" {{
     with open(f"{terraform_dir}/main.tf", "w") as f:
         f.write(main_tf_content)
 
-    # variables.tf
+    # variables.tf (same as before)
     variables_tf = f"""
 variable "subscription_id" {{
   description = "Azure Subscription ID"
