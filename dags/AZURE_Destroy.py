@@ -120,7 +120,7 @@ def branch_resources(request_id):
 
         resourceConfigId = resource[0]
         
-        # Count Azure VM, DB, Storage, and K8s instances
+        # Count Azure VM instances
         cursor.execute(
             'SELECT id FROM "AzureVMInstance" WHERE "resourceConfigId" = %s;',
             (resourceConfigId,)
@@ -128,6 +128,7 @@ def branch_resources(request_id):
         vm_instances = cursor.fetchall()
         vm_count = len(vm_instances)
 
+        # Count Azure DB instances
         cursor.execute(
             'SELECT id FROM "AzureDatabaseInstance" WHERE "resourceConfigId" = %s;',
             (resourceConfigId,)
@@ -135,6 +136,7 @@ def branch_resources(request_id):
         db_instances = cursor.fetchall()
         db_count = len(db_instances)
 
+        # Count Azure Storage instances
         cursor.execute(
             'SELECT id FROM "AzureStorageInstance" WHERE "resourceConfigId" = %s;',
             (resourceConfigId,)
@@ -142,6 +144,7 @@ def branch_resources(request_id):
         st_instances = cursor.fetchall()
         st_count = len(st_instances)
 
+        # Count Azure K8s clusters
         cursor.execute(
             'SELECT id FROM "AzureK8sCluster" WHERE "resourceConfigId" = %s;',
             (resourceConfigId,)
@@ -157,7 +160,7 @@ def branch_resources(request_id):
         if st_count > 0:
             branches.append('terraform_destroy_st')
         if k8s_count > 0:
-            branches.append('terraform_destroy_aks')
+            branches.append('terraform_destroy_k8s')
         
         # Always destroy resource group last
         branches.append('terraform_destroy_rg')
@@ -311,18 +314,7 @@ with DAG(
         retry_delay=timedelta(minutes=5)
     )
 
-    # Destroy AKS Clusters
-    destroy_aks = BashOperator(
-        task_id="terraform_destroy_aks",
-        bash_command=(
-            'cd "/opt/airflow/dags/terraform/{{ ti.xcom_pull(task_ids=\'get_repository_name\') | trim | replace(\'"\',\'\') }}/k8s" && '
-            'terraform init && terraform destroy -auto-approve'
-        ),
-        retries=3,
-        retry_delay=timedelta(minutes=5)
-    )
-
-    # Destroy Azure VMs
+    # Destroy Azure VMs (same as existing)
     destroy_vm = BashOperator(
         task_id="terraform_destroy_vm",
         bash_command=(
@@ -333,7 +325,7 @@ with DAG(
         retry_delay=timedelta(minutes=5)
     )
 
-    # Destroy Azure Databases
+    # Destroy Azure Databases (same as existing)
     destroy_db = BashOperator(
         task_id="terraform_destroy_db",
         bash_command=(
@@ -344,11 +336,22 @@ with DAG(
         retry_delay=timedelta(minutes=5)
     )
 
-    # Destroy Azure Storage
+    # Destroy Azure Storage (same as existing)
     destroy_st = BashOperator(
         task_id="terraform_destroy_st",
         bash_command=(
             'cd "/opt/airflow/dags/terraform/{{ ti.xcom_pull(task_ids=\'get_repository_name\') | trim | replace(\'"\',\'\') }}/st" && '
+            'terraform init && terraform destroy -auto-approve'
+        ),
+        retries=3,
+        retry_delay=timedelta(minutes=5)
+    )
+
+    # Destroy AKS Clusters (mimicking VM/DB/Storage pattern)
+    destroy_k8s = BashOperator(
+        task_id="terraform_destroy_k8s",
+        bash_command=(
+            'cd "/opt/airflow/dags/terraform/{{ ti.xcom_pull(task_ids=\'get_repository_name\') | trim | replace(\'"\',\'\') }}/k8s" && '
             'terraform init && terraform destroy -auto-approve'
         ),
         retries=3,
@@ -387,7 +390,7 @@ with DAG(
 
     # Task dependencies
     get_request_id >> get_repository_name >> branch_task
-    branch_task >> [destroy_aks, destroy_vm, destroy_db, destroy_st] >> destroy_rg >> cleanup_dir >> delete_request
+    branch_task >> [destroy_vm, destroy_db, destroy_st, destroy_k8s] >> destroy_rg >> cleanup_dir >> delete_request
 
 
 
