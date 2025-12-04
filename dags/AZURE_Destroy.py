@@ -163,6 +163,13 @@ def supabase_delete_request(request_id):
             connection.commit()
             print(f"Deleted AzureStorageInstance with id={resourceConfigId}")
 
+        cursor.execute('SELECT * FROM "AzureK8sCluster" WHERE "resourceConfigId" = %s;', (resourceConfigId,))
+        res = cursor.fetchall()
+        if res:
+            cursor.execute('DELETE FROM "AzureK8sCluster" WHERE "resourceConfigId" = %s;', (resourceConfigId,))
+            connection.commit()
+            print(f"Deleted AzureK8sCluster with id={resourceConfigId}")
+
         # Azure Resource Group Instance
         cursor.execute('SELECT * FROM "Resources" WHERE "resourceConfigId" = %s;', (resourceConfigId,))
         res = cursor.fetchall()
@@ -238,6 +245,13 @@ def branch_resources(request_id):
         st_instances = cursor.fetchall()
         st_count = len(st_instances)
 
+        cursor.execute(
+            '''SELECT id FROM "AzureK8sCluster" WHERE "resourceConfigId" = %s;''',
+            (resourceConfigId,)
+        )
+        k8s_instances = cursor.fetchall()
+        k8s_count = len(k8s_instances)
+
         cursor.close()
         connection.close()
 
@@ -248,6 +262,8 @@ def branch_resources(request_id):
             branches.append('terraform_destroy_db')
         if st_count > 0:
             branches.append('terraform_destroy_st')
+        if k8s_count > 0:
+            branches.append('terraform_destroy_k8s')
         if not branches:
             return 'end'
     finally:
@@ -328,6 +344,22 @@ with DAG(
         retry_delay=timedelta(minutes=5)
     )
 
+    destroy_k8s = BashOperator(
+        task_id="terraform_destroy_k8s",
+        bash_command=(
+            'cd "/opt/airflow/dags/terraform/rg-{{ ti.xcom_pull(task_ids=\'get_repository_name\') | trim | replace(\'"\',\'\') }}/k8s" && '
+            'terraform init && terraform destroy -auto-approve'
+        ),
+        env={
+            "ARM_SUBSCRIPTION_ID": os.getenv("AZURE_SUBSCRIPTION_ID"),
+            "ARM_CLIENT_ID": os.getenv("AZURE_CLIENT_ID"),
+            "ARM_CLIENT_SECRET": os.getenv("AZURE_CLIENT_SECRET"),
+            "ARM_TENANT_ID": os.getenv("AZURE_TENANT_ID"),
+        },
+        retries=3,
+        retry_delay=timedelta(minutes=5)
+    )
+
     destroy_rg = BashOperator(
         task_id="terraform_destroy_rg",
         bash_command=(
@@ -372,7 +404,7 @@ with DAG(
     # -------------------------
     # Task dependencies
     # -------------------------
-    get_request_id >> get_repository_name >> branch_task >> [destroy_vm, destroy_db, destroy_st] >> destroy_rg >> cleanup_dir >> delete_request
+    get_request_id >> get_repository_name >> branch_task >> [destroy_vm, destroy_db, destroy_st, destroy_k8s] >> destroy_rg >> cleanup_dir >> delete_request
 
 
 

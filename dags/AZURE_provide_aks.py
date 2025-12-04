@@ -45,13 +45,13 @@ def fetch_from_database(**context):
     cursor = connection.cursor()
 
     cursor.execute(
-        'SELECT "resourcesId", "repositoryId" FROM "Request" WHERE id = %s;',
+        'SELECT "resourcesId" FROM "Request" WHERE id = %s;',
         (request_id,)
     )
     res = cursor.fetchone()
     if not res:
         raise ValueError(f"No request found for id={request_id}")
-    resourcesId, repositoryId = res
+    resourcesId = res
 
     cursor.execute('''
         SELECT "name", "region", "resourceConfigId"
@@ -64,8 +64,7 @@ def fetch_from_database(**context):
     repoName, region, resourceConfigId = resource
 
     cursor.execute(
-        'SELECT "id", "clusterName", "nodeCount", "nodeSize" '
-        'FROM "AzureK8sCluster" WHERE "resourceConfigId" = %s;',
+        'SELECT * FROM "AzureK8sCluster" WHERE "resourceConfigId" = %s;',
         (resourceConfigId,)
     )
     k8s_clusters = cursor.fetchall()
