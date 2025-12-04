@@ -86,7 +86,7 @@ def repository_name(request_id):
 # Step 3: Cleanup folder
 # -------------------------
 def cleanup_directory(projectName):
-    directory_path = f"/opt/airflow/dags/terraform/rg-{projectName}"
+    directory_path = f"/opt/airflow/dags/terraform/{projectName}"
     if os.path.exists(directory_path):
         shutil.rmtree(directory_path)
     return projectName
@@ -315,7 +315,7 @@ with DAG(
     destroy_db = BashOperator(
         task_id="terraform_destroy_db",
         bash_command=(
-            'cd "/opt/airflow/dags/terraform/rg-{{ ti.xcom_pull(task_ids=\'get_repository_name\') | trim | replace(\'"\',\'\') }}/db" && '
+            'cd "/opt/airflow/dags/terraform/{{ ti.xcom_pull(task_ids=\'get_repository_name\') | trim | replace(\'"\',\'\') }}/db" && '
             'terraform init && terraform destroy -auto-approve'
         ),
         env={
