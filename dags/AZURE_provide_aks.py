@@ -51,7 +51,7 @@ def fetch_from_database(**context):
     res = cursor.fetchone()
     if not res:
         raise ValueError(f"No request found for id={request_id}")
-    resourcesId = res
+    resourcesId = res[0]
 
     cursor.execute('''
         SELECT "name", "region", "resourceConfigId"
