@@ -63,9 +63,10 @@ def fetch_from_database(**context):
 
     repoName, region, resourceConfigId = resource
 
-    cursor.execute(
-        'SELECT * FROM "AzureK8sCluster" WHERE "resourceConfigId" = %s;',
-        (resourceConfigId,)
+    cursor.execute('''
+        SELECT id, clusterName, nodeCount, nodeSize
+         FROM "AzureK8sCluster" WHERE "resourceConfigId" = %s;
+    ''', (resourceConfigId,)
     )
     k8s_clusters = cursor.fetchall()
     if not k8s_clusters:
