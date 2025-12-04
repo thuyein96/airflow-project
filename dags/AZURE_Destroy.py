@@ -315,7 +315,7 @@ with DAG(
     destroy_db = BashOperator(
         task_id="terraform_destroy_db",
         bash_command=(
-            'cd "/opt/airflow/dags/terraform/{{ ti.xcom_pull(task_ids=\'get_repository_name\') | trim | replace(\'"\',\'\') }}/db" && '
+            'cd "/opt/airflow/dags/terraform/rg-{{ ti.xcom_pull(task_ids=\'get_repository_name\') | trim | replace(\'"\',\'\') }}/db" && '
             'terraform init && terraform destroy -auto-approve'
         ),
         env={
@@ -347,7 +347,7 @@ with DAG(
     destroy_k8s = BashOperator(
         task_id="terraform_destroy_k8s",
         bash_command=(
-            'cd "/opt/airflow/dags/terraform/rg-{{ ti.xcom_pull(task_ids=\'get_repository_name\') | trim | replace(\'"\',\'\') }}/k8s" && '
+            'cd "/opt/airflow/dags/terraform/{{ ti.xcom_pull(task_ids=\'get_repository_name\') | trim | replace(\'"\',\'\') }}/k8s" && '
             'terraform init && terraform destroy -auto-approve'
         ),
         env={
