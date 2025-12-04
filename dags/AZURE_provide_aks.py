@@ -98,8 +98,7 @@ def create_terraform_directory(configInfo):
         configInfo = ast.literal_eval(configInfo)
         
     repoName = configInfo['repoName']
-    # TODO: change path as needed (remove 'rg-')
-    terraform_dir = f"/opt/airflow/dags/terraform/rg-{repoName}/k8s"
+    terraform_dir = f"/opt/airflow/dags/terraform/{repoName}/k8s"
     os.makedirs(terraform_dir, exist_ok=True)
     return terraform_dir
 
