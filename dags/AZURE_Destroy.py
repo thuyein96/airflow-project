@@ -363,7 +363,7 @@ with DAG(
     destroy_rg = BashOperator(
         task_id="terraform_destroy_rg",
         bash_command=(
-            'cd "/opt/airflow/dags/terraform/rg-{{ ti.xcom_pull(task_ids=\'get_repository_name\') | trim | replace(\'"\',\'\') }}/rg" && '
+            'cd "/opt/airflow/dags/terraform/{{ ti.xcom_pull(task_ids=\'get_repository_name\') | trim | replace(\'"\',\'\') }}/rg" && '
             'terraform init && terraform destroy -auto-approve'
         ),
         env={
