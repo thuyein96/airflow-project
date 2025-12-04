@@ -4,13 +4,12 @@ import pika
 import psycopg2
 import shutil
 from airflow import DAG
-from airflow.operators.python import PythonOperator,BranchPythonOperator
+from airflow.operators.python import PythonOperator, BranchPythonOperator
 from airflow.operators.bash import BashOperator
 from datetime import datetime, timedelta
 from dotenv import load_dotenv
 from os.path import expanduser
 load_dotenv(expanduser('/opt/airflow/dags/.env'))
-
 
 # -------------------------
 # Default DAG args
@@ -87,7 +86,7 @@ def repository_name(request_id):
 # Step 3: Cleanup folder
 # -------------------------
 def cleanup_directory(projectName):
-    directory_path = f"/opt/airflow/dags/terraform/{projectName}"
+    directory_path = f"/opt/airflow/dags/terraform/rg-{projectName}"
     if os.path.exists(directory_path):
         shutil.rmtree(directory_path)
     return projectName
@@ -140,29 +139,29 @@ def supabase_delete_request(request_id):
         print(f"Deleted resources with id={resourcesId}")
 
         # Delete resources
-        # AWS VM Instance
-        cursor.execute('SELECT * FROM "AwsVMInstance" WHERE "resourceConfigId" = %s;', (resourceConfigId,))
+        # Azure VM Instance
+        cursor.execute('SELECT * FROM "AzureVMInstance" WHERE "resourceConfigId" = %s;', (resourceConfigId,))
         res = cursor.fetchall()
         if res:
-            cursor.execute('DELETE FROM "AwsVMInstance" WHERE "resourceConfigId" = %s;', (resourceConfigId,))
+            cursor.execute('DELETE FROM "AzureVMInstance" WHERE "resourceConfigId" = %s;', (resourceConfigId,))
             connection.commit()
-            print(f"Deleted AwsVMInstance with id={resourceConfigId}")
+            print(f"Deleted AzureVMInstance with id={resourceConfigId}")
+        
+        # Azure Database Instance
+        cursor.execute('SELECT * FROM "AzureDatabaseInstance" WHERE "resourceConfigId" = %s;', (resourceConfigId,))
+        res = cursor.fetchall()
+        if res:
+            cursor.execute('DELETE FROM "AzureDatabaseInstance" WHERE "resourceConfigId" = %s;', (resourceConfigId,))
+            connection.commit()
+            print(f"Deleted AzureDatabaseInstance with id={resourceConfigId}")
 
-        # AWS Database Instance
-        cursor.execute('SELECT * FROM "AwsDatabaseInstance" WHERE "resourceConfigId" = %s;', (resourceConfigId,))
+        # Azure Storage Instance
+        cursor.execute('SELECT * FROM "AzureStorageInstance" WHERE "resourceConfigId" = %s;', (resourceConfigId,))
         res = cursor.fetchall()
         if res:
-            cursor.execute('DELETE FROM "AwsDatabaseInstance" WHERE "resourceConfigId" = %s;', (resourceConfigId,))
+            cursor.execute('DELETE FROM "AzureStorageInstance" WHERE "resourceConfigId" = %s;', (resourceConfigId,))
             connection.commit()
-            print(f"Deleted AwsDatabaseInstance with id={resourceConfigId}")
-    
-        # AWS Storage Instance
-        cursor.execute('SELECT * FROM "AwsStorageInstance" WHERE "resourceConfigId" = %s;', (resourceConfigId,))
-        res = cursor.fetchall()
-        if res:
-            cursor.execute('DELETE FROM "AwsStorageInstance" WHERE "resourceConfigId" = %s;', (resourceConfigId,))
-            connection.commit()
-            print(f"Deleted AwsStorageInstance with id={resourceConfigId}")
+            print(f"Deleted AzureStorageInstance with id={resourceConfigId}")
 
         # Azure Resource Group Instance
         cursor.execute('SELECT * FROM "Resources" WHERE "resourceConfigId" = %s;', (resourceConfigId,))
@@ -219,21 +218,21 @@ def branch_resources(request_id):
         
         # Count VM OR DB OR ST instances
         cursor.execute(
-            '''SELECT id FROM "AwsVMInstance" WHERE "resourceConfigId" = %s;''',
+            '''SELECT id FROM "AzureVMInstance" WHERE "resourceConfigId" = %s;''',
             (resourceConfigId,)
         )
         vm_instances = cursor.fetchall()
         vm_count = len(vm_instances)
 
         cursor.execute(
-            '''SELECT id FROM "AwsDatabaseInstance" WHERE "resourceConfigId" = %s;''',
+            '''SELECT id FROM "AzureDatabaseInstance" WHERE "resourceConfigId" = %s;''',
             (resourceConfigId,)
         )
         db_instances = cursor.fetchall()
         db_count = len(db_instances)
 
         cursor.execute(
-            '''SELECT id FROM "AwsStorageInstance" WHERE "resourceConfigId" = %s;''',
+            '''SELECT id FROM "AzureStorageInstance" WHERE "resourceConfigId" = %s;''',
             (resourceConfigId,)
         )
         st_instances = cursor.fetchall()
@@ -244,100 +243,120 @@ def branch_resources(request_id):
 
         branches = []
         if vm_count > 0:
-            branches.append('terraform_destroy_ec2')
+            branches.append('terraform_destroy_vm')
         if db_count > 0:
-            branches.append('terraform_destroy_rds')
+            branches.append('terraform_destroy_db')
         if st_count > 0:
-            branches.append('terraform_destroy_s3')
+            branches.append('terraform_destroy_st')
         if not branches:
             return 'end'
     finally:
         cursor.close()
         connection.close()
     return branches
+
 # -------------------------
 # DAG Definition
 # -------------------------
 with DAG(
-    dag_id='AWS_Destroy',
+    dag_id='AZURE_Destroy',
     default_args=default_args,
     schedule=None,
     catchup=False,
     max_active_runs=1,
 ) as dag:
-    
-    # Get request ID
+
+    # Step 1: Get request ID
     get_request_id = PythonOperator(
         task_id="get_request_id",
         python_callable=rabbitmq_consumer,
     )
 
-    # Get repository/project name
+    # Step 2: Get repository / project name
     get_repository_name = PythonOperator(
         task_id="get_repository_name",
         python_callable=repository_name,
         op_args=["{{ ti.xcom_pull(task_ids='get_request_id') }}"],
     )
+    
+    # Step 3: Terraform destroy subfolders safely
+    destroy_vm = BashOperator(
+    task_id="terraform_destroy_vm",
+    bash_command=(
+        'cd "/opt/airflow/dags/terraform/rg-{{ ti.xcom_pull(task_ids=\'get_repository_name\') | trim | replace(\'"\',\'\') }}/vm" && '
+        'terraform init && terraform destroy -auto-approve'
+    ),
+    env={
+        "ARM_SUBSCRIPTION_ID": os.getenv("AZURE_SUBSCRIPTION_ID"),
+        "ARM_CLIENT_ID": os.getenv("AZURE_CLIENT_ID"),
+        "ARM_CLIENT_SECRET": os.getenv("AZURE_CLIENT_SECRET"),
+        "ARM_TENANT_ID": os.getenv("AZURE_TENANT_ID"),
+    },
+    retries=3,
+    retry_delay=timedelta(minutes=5)
+    )
 
-    destroy_rds = BashOperator(
-        task_id="terraform_destroy_rds",
+    destroy_db = BashOperator(
+        task_id="terraform_destroy_db",
         bash_command=(
-            'cd "/opt/airflow/dags/terraform/{{ ti.xcom_pull(task_ids=\'get_repository_name\') | trim | replace(\'"\',\'\') }}/db" && '
+            'cd "/opt/airflow/dags/terraform/rg-{{ ti.xcom_pull(task_ids=\'get_repository_name\') | trim | replace(\'"\',\'\') }}/db" && '
             'terraform init && terraform destroy -auto-approve'
         ),
         env={
-            "AWS_ACCESS_KEY_ID": os.getenv('AWS_ACCESS_KEY'),
-            "AWS_SECRET_ACCESS_KEY": os.getenv('AWS_SECRET_KEY'),
-            "AWS_DEFAULT_REGION": os.getenv('AWS_DEFAULT_REGION'),
+            "ARM_SUBSCRIPTION_ID": os.getenv("AZURE_SUBSCRIPTION_ID"),
+            "ARM_CLIENT_ID": os.getenv("AZURE_CLIENT_ID"),
+            "ARM_CLIENT_SECRET": os.getenv("AZURE_CLIENT_SECRET"),
+            "ARM_TENANT_ID": os.getenv("AZURE_TENANT_ID"),
         },
         retries=3,
         retry_delay=timedelta(minutes=5)
     )
 
-    destroy_s3 = BashOperator(
-        task_id="terraform_destroy_s3",
+    destroy_st = BashOperator(
+        task_id="terraform_destroy_st",
         bash_command=(
-            'cd "/opt/airflow/dags/terraform/{{ ti.xcom_pull(task_ids=\'get_repository_name\') | trim | replace(\'"\',\'\') }}/st" && '
+            'cd "/opt/airflow/dags/terraform/rg-{{ ti.xcom_pull(task_ids=\'get_repository_name\') | trim | replace(\'"\',\'\') }}/st" && '
             'terraform init && terraform destroy -auto-approve'
         ),
         env={
-            "AWS_ACCESS_KEY_ID": os.getenv('AWS_ACCESS_KEY'),
-            "AWS_SECRET_ACCESS_KEY": os.getenv('AWS_SECRET_KEY'),
-            "AWS_DEFAULT_REGION": os.getenv('AWS_DEFAULT_REGION'),
+            "ARM_SUBSCRIPTION_ID": os.getenv("AZURE_SUBSCRIPTION_ID"),
+            "ARM_CLIENT_ID": os.getenv("AZURE_CLIENT_ID"),
+            "ARM_CLIENT_SECRET": os.getenv("AZURE_CLIENT_SECRET"),
+            "ARM_TENANT_ID": os.getenv("AZURE_TENANT_ID"),
         },
         retries=3,
         retry_delay=timedelta(minutes=5)
     )
 
-    destroy_ec2 = BashOperator(
-        task_id="terraform_destroy_ec2",
+    destroy_rg = BashOperator(
+        task_id="terraform_destroy_rg",
         bash_command=(
-            'cd "/opt/airflow/dags/terraform/{{ ti.xcom_pull(task_ids=\'get_repository_name\') | trim | replace(\'"\',\'\') }}/vm" && '
+            'cd "/opt/airflow/dags/terraform/rg-{{ ti.xcom_pull(task_ids=\'get_repository_name\') | trim | replace(\'"\',\'\') }}/rg" && '
             'terraform init && terraform destroy -auto-approve'
         ),
         env={
-            "AWS_ACCESS_KEY_ID": os.getenv('AWS_ACCESS_KEY'),
-            "AWS_SECRET_ACCESS_KEY": os.getenv('AWS_SECRET_KEY'),
-            "AWS_DEFAULT_REGION": os.getenv('AWS_DEFAULT_REGION'),
+            "ARM_SUBSCRIPTION_ID": os.getenv("AZURE_SUBSCRIPTION_ID"),
+            "ARM_CLIENT_ID": os.getenv("AZURE_CLIENT_ID"),
+            "ARM_CLIENT_SECRET": os.getenv("AZURE_CLIENT_SECRET"),
+            "ARM_TENANT_ID": os.getenv("AZURE_TENANT_ID"),
         },
+        trigger_rule='none_failed_min_one_success',
         retries=3,
         retry_delay=timedelta(minutes=5)
+    )
+
+    # Step 4: Cleanup folder
+    cleanup_dir = PythonOperator(
+        task_id="cleanup_dir",
+        python_callable=cleanup_directory,
+        op_args=["{{ ti.xcom_pull(task_ids='get_repository_name') }}"],
+        trigger_rule='all_done'
     )
 
     branch_task = BranchPythonOperator(
         task_id='branch_resources',
         python_callable=branch_resources,
         op_args=["{{ ti.xcom_pull(task_ids='get_request_id') }}"],
-        retries=3,
-        retry_delay=timedelta(minutes=5)
-    )
-
-    # Cleanup folder
-    cleanup_dir = PythonOperator(
-        task_id="cleanup_dir",
-        python_callable=cleanup_directory,
-        op_args=["{{ ti.xcom_pull(task_ids='get_repository_name') }}"],
-        trigger_rule='none_failed_min_one_success',
     )
 
     # Delete DB record
@@ -350,4 +369,12 @@ with DAG(
         retry_delay=timedelta(minutes=5)
     )
 
-    get_request_id >> get_repository_name >> branch_task>> [destroy_ec2, destroy_rds, destroy_s3] >> cleanup_dir >> delete_request
+    # -------------------------
+    # Task dependencies
+    # -------------------------
+    get_request_id >> get_repository_name >> branch_task >> [destroy_vm, destroy_db, destroy_st] >> destroy_rg >> cleanup_dir >> delete_request
+
+
+
+
+
