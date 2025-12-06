@@ -19,7 +19,11 @@ services:
     volumes:
       - rabbitmq-data-volume:/var/lib/rabbitmq
     networks:
-      - default
+      - airflow_shared_network
 
 volumes:
   rabbitmq-data-volume:
+
+networks:
+  airflow_shared_network:
+    external: true
