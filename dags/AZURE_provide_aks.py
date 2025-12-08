@@ -321,7 +321,7 @@ def get_and_store_kubeconfig(**context):
         
     return kubeconfig_map
 
-def write_to_db(terraform_dir, configInfo):
+def write_to_db(terraform_dir, configInfo, kubeconfig_map):
     if isinstance(configInfo, str):
         configInfo = ast.literal_eval(configInfo)
     if isinstance(kubeconfig_map, str):
