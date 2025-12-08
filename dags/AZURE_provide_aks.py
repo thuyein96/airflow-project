@@ -214,7 +214,7 @@ output "cluster_names" {{
 }}
 
 output "kube_configs" {{
-  value = {{ for name, cluster in azurerm_kubernetes_cluster.aks_cluster : name => cluster.kube_config_raw }}
+  value = {{ for name, cluster in azurerm_kubernetes_cluster.aks_cluster : name => cluster.kube_admin_config_raw }}
   sensitive = true
 }}
 
@@ -313,7 +313,7 @@ def write_to_db(terraform_dir, configInfo):
                     attributes = instance.get('attributes', {})
                     # Match by name
                     if attributes.get('name') == cluster_name:
-                        kube_config_raw = attributes.get('kube_config_raw', '')
+                        kube_config_raw = attributes.get('kube_admin_config_raw', '')
                         cluster_fqdn = attributes.get('fqdn', '')
                         break
                 if kube_config_raw:
