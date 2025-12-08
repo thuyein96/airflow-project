@@ -279,6 +279,8 @@ def get_and_store_kubeconfig(**context):
     Iterates through all clusters, runs AZ CLI to get token-based kubeconfig,
     and stores the kubeconfig file path and cluster info in XComs.
     """
+    import subprocess
+    
     ti = context['ti']
     configInfo = ti.xcom_pull(task_ids='fetch_config')
     if isinstance(configInfo, str):
@@ -286,6 +288,15 @@ def get_and_store_kubeconfig(**context):
         
     project_name = f"{configInfo['repoName']}-{configInfo['resourcesId'][:4]}"
     k8s_clusters = configInfo['k8s_clusters']
+    
+    load_dotenv(expanduser('/opt/airflow/dags/.env'))
+    
+    # Set Azure credentials as environment variables
+    env = os.environ.copy()
+    env['AZURE_CLIENT_ID'] = os.getenv('AZURE_CLIENT_ID')
+    env['AZURE_CLIENT_SECRET'] = os.getenv('AZURE_CLIENT_SECRET')
+    env['AZURE_TENANT_ID'] = os.getenv('AZURE_TENANT_ID')
+    env['AZURE_SUBSCRIPTION_ID'] = os.getenv('AZURE_SUBSCRIPTION_ID')
     
     kubeconfig_map = {}
     
@@ -296,24 +307,62 @@ def get_and_store_kubeconfig(**context):
         # 1. Define unique file path for this cluster's kubeconfig
         kubeconfig_file = KUBECONFIG_TEMP_PATH_TEMPLATE.format(cluster_id=cluster_id)
         
-        # 2. Construct and run the Azure CLI command
-        bash_command = (
-            f"az aks get-credentials "
-            f"--resource-group {project_name} "
-            f"--name {cluster_name} "
-            f"--file {kubeconfig_file} "
-            f"--overwrite-existing "
-            f"--aad" # Use AAD authentication to ensure token-based config is retrieved
-        )
+        # 2. Login to Azure using service principal
+        login_command = [
+            'az', 'login',
+            '--service-principal',
+            '--username', env['AZURE_CLIENT_ID'],
+            '--password', env['AZURE_CLIENT_SECRET'],
+            '--tenant', env['AZURE_TENANT_ID']
+        ]
         
-        # NOTE: Using subprocess or a dummy BashOperator inside the DAG
-        # for dynamic tasks is complex. A simple approach is to use a 
-        # Python Operator to execute the Bash command directly.
+        print(f"Logging in to Azure...")
+        try:
+            result = subprocess.run(login_command, capture_output=True, text=True, check=True, env=env)
+            print(f"Azure login successful")
+        except subprocess.CalledProcessError as e:
+            print(f"Azure login failed: {e.stderr}")
+            raise
         
-        print(f"Executing: {bash_command}")
-        os.system(bash_command) # Execute the command on the worker
+        # 3. Set subscription
+        set_subscription_command = [
+            'az', 'account', 'set',
+            '--subscription', env['AZURE_SUBSCRIPTION_ID']
+        ]
         
-        # 3. Store the path and cluster info for the final DB write task
+        print(f"Setting subscription...")
+        try:
+            subprocess.run(set_subscription_command, capture_output=True, text=True, check=True, env=env)
+            print(f"Subscription set successfully")
+        except subprocess.CalledProcessError as e:
+            print(f"Set subscription failed: {e.stderr}")
+            raise
+        
+        # 4. Get AKS credentials
+        get_credentials_command = [
+            'az', 'aks', 'get-credentials',
+            '--resource-group', project_name,
+            '--name', cluster_name,
+            '--file', kubeconfig_file,
+            '--overwrite-existing',
+            '--admin'  # Use admin credentials instead of AAD
+        ]
+        
+        print(f"Executing: {' '.join(get_credentials_command)}")
+        try:
+            result = subprocess.run(get_credentials_command, capture_output=True, text=True, check=True, env=env)
+            print(f"Kubeconfig retrieved successfully: {result.stdout}")
+        except subprocess.CalledProcessError as e:
+            print(f"Failed to get kubeconfig: {e.stderr}")
+            raise
+        
+        # 5. Verify file was created
+        if not os.path.exists(kubeconfig_file):
+            raise FileNotFoundError(f"Kubeconfig file was not created at {kubeconfig_file}")
+        
+        print(f"Kubeconfig file created at: {kubeconfig_file}")
+        
+        # 6. Store the path and cluster info for the final DB write task
         kubeconfig_map[cluster_id] = {
             'file_path': kubeconfig_file,
             'cluster_name': cluster_name
