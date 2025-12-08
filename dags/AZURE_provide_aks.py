@@ -338,23 +338,39 @@ def get_and_store_kubeconfig(**context):
         #     print(f"Set subscription failed: {e.stderr}")
         #     raise
         
-        # 4. Get AKS credentials
-        get_credentials_command = [
-            'az', 'aks', 'get-credentials',
-            '--resource-group', project_name,
-            '--name', cluster_name,
-            '--file', kubeconfig_file,
-            '--overwrite-existing',
-            '--aad'  # Use admin credentials instead of AAD
-        ]
+        # # 4. Get AKS credentials
+        # get_credentials_command = [
+        #     'az', 'aks', 'get-credentials',
+        #     '--resource-group', project_name,
+        #     '--name', cluster_name,
+        #     '--file', kubeconfig_file,
+        #     '--overwrite-existing',
+        #     '--aad'  # Use admin credentials instead of AAD
+        # ]
         
-        print(f"Executing: {' '.join(get_credentials_command)}")
-        try:
-            result = subprocess.run(get_credentials_command, capture_output=True, text=True, check=True, env=env)
-            print(f"Kubeconfig retrieved successfully: {result.stdout}")
-        except subprocess.CalledProcessError as e:
-            print(f"Failed to get kubeconfig: {e.stderr}")
-            raise
+        # print(f"Executing: {' '.join(get_credentials_command)}")
+        # try:
+        #     result = subprocess.run(get_credentials_command, capture_output=True, text=True, check=True, env=env)
+        #     print(f"Kubeconfig retrieved successfully: {result.stdout}")
+        # except subprocess.CalledProcessError as e:
+        #     print(f"Failed to get kubeconfig: {e.stderr}")
+        #     raise
+
+        bash_command = (
+            f"az aks get-credentials "
+            f"--resource-group {project_name} "
+            f"--name {cluster_name} "
+            f"--file {kubeconfig_file} "
+            f"--overwrite-existing "
+            f"--aad" # Use AAD authentication to ensure token-based config is retrieved
+        )
+        
+        # NOTE: Using subprocess or a dummy BashOperator inside the DAG
+        # for dynamic tasks is complex. A simple approach is to use a 
+        # Python Operator to execute the Bash command directly.
+        
+        print(f"Executing: {bash_command}")
+        os.system(bash_command) # Execute the command on the worker
         
         # 5. Verify file was created
         if not os.path.exists(kubeconfig_file):
