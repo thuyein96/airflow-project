@@ -11,6 +11,9 @@ from airflow import DAG
 from airflow.operators.python import PythonOperator
 from airflow.operators.bash import BashOperator
 
+# Added for temporary kubeconfig file path template
+# Kubeconfig will be stored as: /tmp/kubeconfig_{cluster_id}.yaml
+KUBECONFIG_TEMP_PATH_TEMPLATE = "/tmp/kubeconfig_{cluster_id}.yaml"
 
 # -------------------------
 # Default DAG args
@@ -271,9 +274,58 @@ variable "k8s_clusters" {{
     with open(f"{terraform_dir}/variables.tf", "w") as f:
         f.write(variables_tf)
 
+def get_and_store_kubeconfig(**context):
+    """
+    Iterates through all clusters, runs AZ CLI to get token-based kubeconfig,
+    and stores the kubeconfig file path and cluster info in XComs.
+    """
+    ti = context['ti']
+    configInfo = ti.xcom_pull(task_ids='fetch_config')
+    if isinstance(configInfo, str):
+        configInfo = ast.literal_eval(configInfo)
+        
+    project_name = f"{configInfo['repoName']}-{configInfo['resourcesId'][:4]}"
+    k8s_clusters = configInfo['k8s_clusters']
+    
+    kubeconfig_map = {}
+    
+    for cluster in k8s_clusters:
+        cluster_id = cluster['id']
+        cluster_name = cluster['cluster_name']
+        
+        # 1. Define unique file path for this cluster's kubeconfig
+        kubeconfig_file = KUBECONFIG_TEMP_PATH_TEMPLATE.format(cluster_id=cluster_id)
+        
+        # 2. Construct and run the Azure CLI command
+        bash_command = (
+            f"az aks get-credentials "
+            f"--resource-group {project_name} "
+            f"--name {cluster_name} "
+            f"--file {kubeconfig_file} "
+            f"--overwrite-existing "
+            f"--aad" # Use AAD authentication to ensure token-based config is retrieved
+        )
+        
+        # NOTE: Using subprocess or a dummy BashOperator inside the DAG
+        # for dynamic tasks is complex. A simple approach is to use a 
+        # Python Operator to execute the Bash command directly.
+        
+        print(f"Executing: {bash_command}")
+        os.system(bash_command) # Execute the command on the worker
+        
+        # 3. Store the path and cluster info for the final DB write task
+        kubeconfig_map[cluster_id] = {
+            'file_path': kubeconfig_file,
+            'cluster_name': cluster_name
+        }
+        
+    return kubeconfig_map
+
 def write_to_db(terraform_dir, configInfo):
     if isinstance(configInfo, str):
         configInfo = ast.literal_eval(configInfo)
+    if isinstance(kubeconfig_map, str):
+        kubeconfig_map = ast.literal_eval(kubeconfig_map)
 
     k8s_output_file = Path(terraform_dir) / "terraform.tfstate"
 
@@ -294,15 +346,15 @@ def write_to_db(terraform_dir, configInfo):
     )
     cursor = connection.cursor()
     
-    cursor.execute('''
-        SELECT "name", "region", "resourceConfigId"
-        FROM "Resources" WHERE id = %s;
-    ''', (configInfo['resourcesId'],))
-    resource = cursor.fetchone()
-    if not resource:
-        raise ValueError(f"No resource found for resourcesId={configInfo['resourcesId']}")
+    # cursor.execute('''
+    #     SELECT "name", "region", "resourceConfigId"
+    #     FROM "Resources" WHERE id = %s;
+    # ''', (configInfo['resourcesId'],))
+    # resource = cursor.fetchone()
+    # if not resource:
+    #     raise ValueError(f"No resource found for resourcesId={configInfo['resourcesId']}")
 
-    repoName, region, resourceConfigId = resource
+    # repoName, region, resourceConfigId = resource
 
     with open(k8s_output_file, 'r') as f:
         k8s_state = json.load(f)
@@ -310,6 +362,20 @@ def write_to_db(terraform_dir, configInfo):
     # Extract kubeconfig and cluster info for each cluster
     for cluster in configInfo['k8s_clusters']:
         cluster_id = cluster['id']
+        
+        # 1. Retrieve the unique kubeconfig file path from the map
+        if cluster_id not in kubeconfig_map:
+             print(f"Warning: No kubeconfig found for cluster ID {cluster_id}. Skipping DB update for this cluster.")
+             continue
+            
+        file_path = kubeconfig_map[cluster_id]['file_path']
+        kubeconfig_file = Path(file_path)
+        
+        if not kubeconfig_file.exists():
+            raise FileNotFoundError(f"Kubeconfig file not found at {kubeconfig_file} for cluster {cluster_id}.")
+        # 2. Read the unique token-based kubeconfig
+        with open(kubeconfig_file, 'r') as f:
+            kube_config_raw = f.read()
         
         # Find the cluster resource in terraform state
         for resource in k8s_state.get('resources', []):
@@ -319,12 +385,15 @@ def write_to_db(terraform_dir, configInfo):
                     # Extract kubeconfig
                     kube_config_raw = attributes.get('kube_config_raw', '')
                     cluster_fqdn = attributes.get('fqdn', '')
+                    break
+                if cluster_fqdn:
+                    break
                     
-                    # Update each cluster individually
-                    cursor.execute(
-                        'UPDATE "AzureK8sCluster" SET "kubeConfig" = %s, "clusterFqdn" = %s, "terraformState" = %s WHERE "id" = %s;',
-                        (kube_config_raw, cluster_fqdn, json.dumps(k8s_state), cluster_id)
-                    )
+        # Update each cluster individually
+        cursor.execute(
+            'UPDATE "AzureK8sCluster" SET "kubeConfig" = %s, "clusterFqdn" = %s, "terraformState" = %s WHERE "id" = %s;',
+            (kube_config_raw, cluster_fqdn, json.dumps(k8s_state), cluster_id)
+        )
     
     connection.commit()
     cursor.close()
@@ -378,13 +447,19 @@ with DAG(
         bash_command="cd {{ ti.xcom_pull(task_ids='create_terraform_dir') }} && terraform apply -auto-approve",
     )
 
+    get_and_store_kubeconfig_task = PythonOperator(
+        task_id="get_and_store_kubeconfig",
+        python_callable=get_and_store_kubeconfig,
+    )
+
     write_to_db_task = PythonOperator(
         task_id="write_to_db",
         python_callable=write_to_db,
         op_args=[
             "{{ ti.xcom_pull(task_ids='create_terraform_dir') }}",
             "{{ ti.xcom_pull(task_ids='fetch_config') }}",
+            "{{ ti.xcom_pull(task_ids='get_and_store_kubeconfig') }}",
         ],
     )
 
-    fetch_task >> create_dir_task >> write_files_task >> terraform_init >> terraform_apply >> write_to_db_task
+    fetch_task >> create_dir_task >> write_files_task >> terraform_init >> terraform_apply >> get_and_store_kubeconfig_task >> write_to_db_task
