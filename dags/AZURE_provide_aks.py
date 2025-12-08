@@ -345,7 +345,7 @@ def get_and_store_kubeconfig(**context):
             '--name', cluster_name,
             '--file', kubeconfig_file,
             '--overwrite-existing',
-            '--admin'  # Use admin credentials instead of AAD
+            '--aad'  # Use admin credentials instead of AAD
         ]
         
         print(f"Executing: {' '.join(get_credentials_command)}")
