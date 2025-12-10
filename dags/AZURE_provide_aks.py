@@ -48,7 +48,7 @@ def fetch_from_database(**context):
     cursor = connection.cursor()
 
     cursor.execute(
-        'SELECT "resourcesId" FROM "Request" WHERE id = %s;',
+        'SELECT "resourcesId" FROM "ProjectRequest" WHERE id = %s;',
         (request_id,)
     )
     res = cursor.fetchone()
@@ -274,6 +274,59 @@ variable "k8s_clusters" {{
     with open(f"{terraform_dir}/variables.tf", "w") as f:
         f.write(variables_tf)
 
+def get_and_store_kubeconfig(**context):
+    """
+    Iterates through all clusters, runs AZ CLI to get token-based kubeconfig,
+    reads the content, and stores the {cluster_id: kubeconfig_content} map in XCom.
+    """
+    ti = context['ti']
+    configInfo = ti.xcom_pull(task_ids='fetch_config')
+    if isinstance(configInfo, str):
+        configInfo = ast.literal_eval(configInfo)
+        
+    project_name = f"{configInfo['repoName']}-{configInfo['resourcesId'][:4]}"
+    k8s_clusters = configInfo['k8s_clusters']
+    
+    # This map will store the final {cluster_id: kubeconfig_content}
+    kubeconfig_content_map = {}
+    
+    for cluster in k8s_clusters:
+        cluster_id = cluster['id']
+        cluster_name = cluster['cluster_name']
+        
+        # 1. Define unique file path for this cluster's kubeconfig
+        kubeconfig_file = KUBECONFIG_TEMP_PATH_TEMPLATE.format(cluster_id=cluster_id)
+        
+        # 2. Construct and run the Azure CLI command to generate the file
+        # The `--aad` flag ensures a token-based (exec plugin) config is retrieved.
+        bash_command = (
+            f"az aks get-credentials "
+            f"--resource-group {project_name} "
+            f"--name {cluster_name} "
+            f"--file {kubeconfig_file} "
+            f"--overwrite-existing "
+        )
+        
+        print(f"Executing: {bash_command}")
+        os.system(bash_command)
+        
+        # 3. Read the content of the generated kubeconfig file
+        kubeconfig_path = Path(kubeconfig_file)
+        if not kubeconfig_path.exists():
+            raise FileNotFoundError(f"AZ CLI failed to generate kubeconfig file at {kubeconfig_file} for cluster {cluster_name}")
+
+        with open(kubeconfig_path, 'r') as f:
+            kubeconfig_content = f.read()
+        
+        # 4. Store the content in the map
+        kubeconfig_content_map[cluster_id] = kubeconfig_content
+        
+        # Clean up the temporary file immediately after reading
+        os.remove(kubeconfig_path)
+
+    # Return the map containing all cluster IDs and their corresponding kubeconfig contents
+    return kubeconfig_content_map
+
 def write_to_db(terraform_dir, configInfo):
     if isinstance(configInfo, str):
         configInfo = ast.literal_eval(configInfo)
@@ -310,10 +363,9 @@ def write_to_db(terraform_dir, configInfo):
         for resource in k8s_state.get('resources', []):
             if resource.get('type') == 'azurerm_kubernetes_cluster' and resource.get('name') == 'aks_cluster':
                 for instance in resource.get('instances', []):
-                    attributes = instance.get('attributes', {})
                     # Match by name
                     if attributes.get('name') == cluster_name:
-                        kube_config_raw = attributes.get('kube_admin_config_raw', '')
+                        attributes = instance.get('attributes', {})
                         cluster_fqdn = attributes.get('fqdn', '')
                         break
                 if kube_config_raw:
@@ -372,12 +424,19 @@ with DAG(
         bash_command="cd {{ ti.xcom_pull(task_ids='create_terraform_dir') }} && terraform apply -auto-approve",
     )
 
+    get_and_store_kubeconfig_task = PythonOperator(
+        task_id="get_and_store_kubeconfig",
+        python_callable=get_and_store_kubeconfig,
+        provide_context=True,
+    )
+
     write_to_db_task = PythonOperator(
         task_id="write_to_db",
         python_callable=write_to_db,
         op_args=[
             "{{ ti.xcom_pull(task_ids='create_terraform_dir') }}",
             "{{ ti.xcom_pull(task_ids='fetch_config') }}",
+            "{{ ti.xcom_pull(task_ids='get_and_store_kubeconfig') }}"
         ],
     )
 
