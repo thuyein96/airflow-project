@@ -436,7 +436,6 @@ with DAG(
         op_args=[
             "{{ ti.xcom_pull(task_ids='create_terraform_dir') }}",
             "{{ ti.xcom_pull(task_ids='fetch_config') }}",
-            "{{ ti.xcom_pull(task_ids='get_and_store_kubeconfig') }}"
         ],
     )
 
