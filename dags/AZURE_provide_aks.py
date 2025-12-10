@@ -11,10 +11,6 @@ from airflow import DAG
 from airflow.operators.python import PythonOperator
 from airflow.operators.bash import BashOperator
 
-# Added for temporary kubeconfig file path template
-# Kubeconfig will be stored as: /tmp/kubeconfig_{cluster_id}.yaml
-KUBECONFIG_TEMP_PATH_TEMPLATE = "/tmp/kubeconfig_{cluster_id}.yaml"
-
 # -------------------------
 # Default DAG args
 # -------------------------
@@ -274,60 +270,7 @@ variable "k8s_clusters" {{
     with open(f"{terraform_dir}/variables.tf", "w") as f:
         f.write(variables_tf)
 
-def get_and_store_kubeconfig(**context):
-    """
-    Iterates through all clusters, runs AZ CLI to get token-based kubeconfig,
-    reads the content, and stores the {cluster_id: kubeconfig_content} map in XCom.
-    """
-    ti = context['ti']
-    configInfo = ti.xcom_pull(task_ids='fetch_config')
-    if isinstance(configInfo, str):
-        configInfo = ast.literal_eval(configInfo)
-        
-    project_name = f"{configInfo['repoName']}-{configInfo['resourcesId'][:4]}"
-    k8s_clusters = configInfo['k8s_clusters']
-    
-    # This map will store the final {cluster_id: kubeconfig_content}
-    kubeconfig_content_map = {}
-    
-    for cluster in k8s_clusters:
-        cluster_id = cluster['id']
-        cluster_name = cluster['cluster_name']
-        
-        # 1. Define unique file path for this cluster's kubeconfig
-        kubeconfig_file = KUBECONFIG_TEMP_PATH_TEMPLATE.format(cluster_id=cluster_id)
-        
-        # 2. Construct and run the Azure CLI command to generate the file
-        # The `--aad` flag ensures a token-based (exec plugin) config is retrieved.
-        bash_command = (
-            f"az aks get-credentials "
-            f"--resource-group {project_name} "
-            f"--name {cluster_name} "
-            f"--file {kubeconfig_file} "
-            f"--overwrite-existing "
-        )
-        
-        print(f"Executing: {bash_command}")
-        os.system(bash_command)
-        
-        # 3. Read the content of the generated kubeconfig file
-        kubeconfig_path = Path(kubeconfig_file)
-        if not kubeconfig_path.exists():
-            raise FileNotFoundError(f"AZ CLI failed to generate kubeconfig file at {kubeconfig_file} for cluster {cluster_name}")
-
-        with open(kubeconfig_path, 'r') as f:
-            kubeconfig_content = f.read()
-        
-        # 4. Store the content in the map
-        kubeconfig_content_map[cluster_id] = kubeconfig_content
-        
-        # Clean up the temporary file immediately after reading
-        os.remove(kubeconfig_path)
-
-    # Return the map containing all cluster IDs and their corresponding kubeconfig contents
-    return kubeconfig_content_map
-
-def write_to_db(terraform_dir, configInfo):
+def write_to_db(terraform_dir, configInfo, **_):
     if isinstance(configInfo, str):
         configInfo = ast.literal_eval(configInfo)
 
@@ -363,9 +306,16 @@ def write_to_db(terraform_dir, configInfo):
         for resource in k8s_state.get('resources', []):
             if resource.get('type') == 'azurerm_kubernetes_cluster' and resource.get('name') == 'aks_cluster':
                 for instance in resource.get('instances', []):
-                    # Match by name
-                    if attributes.get('name') == cluster_name:
-                        attributes = instance.get('attributes', {})
+                    attributes = instance.get('attributes', {})
+                    index_key = instance.get('index_key')
+
+                    # Match either by for_each key (cluster id) or by name
+                    if index_key == cluster_id or attributes.get('name') == cluster_name:
+                        kube_config_raw = (
+                            attributes.get('kube_admin_config_raw')
+                            or attributes.get('kube_config_raw')
+                            or ''
+                        )
                         cluster_fqdn = attributes.get('fqdn', '')
                         break
                 if kube_config_raw:
@@ -422,12 +372,6 @@ with DAG(
     terraform_apply = BashOperator(
         task_id="terraform_apply",
         bash_command="cd {{ ti.xcom_pull(task_ids='create_terraform_dir') }} && terraform apply -auto-approve",
-    )
-
-    get_and_store_kubeconfig_task = PythonOperator(
-        task_id="get_and_store_kubeconfig",
-        python_callable=get_and_store_kubeconfig,
-        provide_context=True,
     )
 
     write_to_db_task = PythonOperator(
