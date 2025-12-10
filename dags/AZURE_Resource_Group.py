@@ -77,7 +77,7 @@ def fetch_from_database(request_id):
     cursor = connection.cursor()
 
     # 1️⃣ Get resourcesId from Request
-    cursor.execute('SELECT "resourcesId" FROM "Request" WHERE id = %s;', (request_id,))
+    cursor.execute('SELECT "resourcesId" FROM "ProjectRequest" WHERE id = %s;', (request_id,))
     res = cursor.fetchone()
     if not res:
         raise ValueError(f"No request found for id={request_id}")
