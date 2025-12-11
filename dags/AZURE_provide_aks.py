@@ -270,7 +270,7 @@ variable "k8s_clusters" {{
     with open(f"{terraform_dir}/variables.tf", "w") as f:
         f.write(variables_tf)
 
-def write_to_db(terraform_dir, configInfo, **_):
+def write_to_db(terraform_dir, configInfo, **context):
     if isinstance(configInfo, str):
         configInfo = ast.literal_eval(configInfo)
 
@@ -294,6 +294,9 @@ def write_to_db(terraform_dir, configInfo, **_):
 
     with open(k8s_output_file, 'r') as f:
         k8s_state = json.load(f)
+
+
+    owner_id = row[0]
 
     # Extract kubeconfig for each cluster from Terraform state
     for cluster in configInfo['k8s_clusters']:
