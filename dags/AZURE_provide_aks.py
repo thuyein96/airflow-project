@@ -44,7 +44,7 @@ def fetch_from_database(**context):
     cursor = connection.cursor()
 
     cursor.execute(
-        'SELECT "resourcesId" FROM "ProjectRequest" WHERE id = %s;',
+        'SELECT "resourcesId" FROM "Request" WHERE id = %s;',
         (request_id,)
     )
     res = cursor.fetchone()
