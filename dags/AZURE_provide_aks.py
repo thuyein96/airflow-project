@@ -293,10 +293,7 @@ def write_to_db(terraform_dir, configInfo, **context):
     cursor = connection.cursor()
 
     with open(k8s_output_file, 'r') as f:
-        k8s_state = json.load(f)
-
-
-    owner_id = row[0]
+      k8s_state = json.load(f)
 
     # Extract kubeconfig for each cluster from Terraform state
     for cluster in configInfo['k8s_clusters']:
