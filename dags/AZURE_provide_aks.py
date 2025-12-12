@@ -270,7 +270,7 @@ variable "k8s_clusters" {{
     with open(f"{terraform_dir}/variables.tf", "w") as f:
         f.write(variables_tf)
 
-def write_to_db(terraform_dir, configInfo, **context):
+def write_to_db(terraform_dir, configInfo, *args, **context):
     if isinstance(configInfo, str):
         configInfo = ast.literal_eval(configInfo)
 
