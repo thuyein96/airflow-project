@@ -212,9 +212,9 @@ def branch_resources(configInfo):
 # Airflow DAG
 # -------------------------
 with DAG(
-    dag_id="AZURE_Resource_Group",
+    dag_id="AZURE_Resource_Group_Cluster",
     default_args=default_args,
-    description="Provision Azure Resource Group",
+    description="Provision Azure Resource Group for Cluster",
     schedule_interval=None,
     start_date=datetime(2025, 9, 2),
     catchup=False,
