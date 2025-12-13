@@ -85,7 +85,7 @@ def fetch_from_database(**context):
     connection.close()
 
     configInfo = {
-        "resourcesId": resourcesId,
+        "resourcesId": resource_id,
         "repoName": repoName,
         "region": region,
         "k8s_clusters": cluster_list
