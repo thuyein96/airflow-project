@@ -107,7 +107,7 @@ def fetch_from_database(resource_id):
     connection.close()
 
     configInfo = {
-        "resourcesId": resource_id,
+        "resourceId": resource_id,
         "repoName": repoName,
         "region": region,
         "cloudProvider": cloudProvider,
