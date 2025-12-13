@@ -111,9 +111,6 @@ def fetch_from_database(resource_id):
         "repoName": repoName,
         "region": region,
         "cloudProvider": cloudProvider,
-        "vmCount": vm_count,
-        "dbCount": db_count,
-        "stCount": st_count,
         "k8sCount": k8s_count
     }
 
