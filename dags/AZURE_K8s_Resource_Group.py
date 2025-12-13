@@ -16,6 +16,33 @@ from airflow.operators.bash import BashOperator
 KUBECONFIG_TEMP_PATH_TEMPLATE = "/tmp/kubeconfig_{cluster_id}.yaml"
 
 # -------------------------
+# Step 1: RabbitMQ consumer
+# -------------------------
+def rabbitmq_consumer():
+    load_dotenv(expanduser('/opt/airflow/dags/.env'))
+    rabbit_url = os.getenv("RABBITMQ_URL")
+    # rabbit_url = "amqp://guest:guest@host.docker.internal:5672"
+    if not rabbit_url:
+        raise ValueError("RABBITMQ_URL is not set in .env")
+
+    connection = pika.BlockingConnection(pika.URLParameters(rabbit_url))
+    channel = connection.channel()
+
+    method_frame, header_frame, body = channel.basic_get(queue='resource', auto_ack=True)
+    if method_frame:
+        message = body.decode()
+        obj = json.loads(message)
+        resource_id = obj["data"]["resourceId"]
+        print(f"[x] Got message: {resource_id}")
+        connection.close()
+        return resource_id
+    else:
+        print("[x] No message in queue")
+        connection.close()
+        return None
+
+
+# -------------------------
 # Default DAG args
 # -------------------------
 default_args = {
@@ -26,9 +53,9 @@ default_args = {
 }
 
 def fetch_from_database(**context):
-    request_id = context['dag_run'].conf.get('request_id')
-    if not request_id:
-        raise ValueError("No request_id received. Stop DAG run.")
+    resource_id = context['dag_run'].conf.get('resource_id')
+    if not resource_id:
+        raise ValueError("No resource_id received. Stop DAG run.")
 
     load_dotenv(expanduser('/opt/airflow/dags/.env'))
 
@@ -47,22 +74,22 @@ def fetch_from_database(**context):
     )
     cursor = connection.cursor()
 
-    cursor.execute(
-        'SELECT "resourcesId" FROM "ProjectRequest" WHERE id = %s;',
-        (request_id,)
-    )
-    res = cursor.fetchone()
-    if not res:
-        raise ValueError(f"No request found for id={request_id}")
-    resourcesId = res[0]
+    # cursor.execute(
+    #     'SELECT "resourcesId" FROM "ProjectRequest" WHERE id = %s;',
+    #     (resource_id,)
+    # )
+    # res = cursor.fetchone()
+    # if not res:
+    #     raise ValueError(f"No request found for id={resource_id}")
+    # resourcesId = res[0]
 
     cursor.execute('''
         SELECT "name", "region", "resourceConfigId"
         FROM "Resources" WHERE id = %s;
-    ''', (resourcesId,))
+    ''', (resource_id,))
     resource = cursor.fetchone()
     if not resource:
-        raise ValueError(f"No resource found for resourcesId={resourcesId}")
+        raise ValueError(f"No resource found for resourcesId={resource_id}")
 
     repoName, region, resourceConfigId = resource
 
@@ -387,7 +414,7 @@ def write_to_db(terraform_dir, configInfo):
     connection.close()
 
 with DAG(
-    'AZURE_terraform_k8s_provision',
+    'AZURE_terraform_k8s_provision[extra]',
     default_args=default_args,
     schedule_interval=None,
     catchup=False,
