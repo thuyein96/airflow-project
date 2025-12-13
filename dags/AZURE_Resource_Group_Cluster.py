@@ -194,12 +194,6 @@ resource "azurerm_resource_group" "rg" {
 def branch_resources(configInfo):
     data = json.loads(configInfo)
     branches = []
-    if data['vmCount'] > 0:
-        branches.append('trigger_vm')
-    if data['dbCount'] > 0:
-        branches.append('trigger_db')
-    if data['stCount'] > 0:
-        branches.append('trigger_st')
     if data['k8sCount'] > 0:
         branches.append('trigger_aks')
     if not branches:
