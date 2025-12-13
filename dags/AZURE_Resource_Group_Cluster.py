@@ -144,7 +144,7 @@ client_id            = "{os.getenv('AZURE_CLIENT_ID')}"
 client_secret        = "{os.getenv('AZURE_CLIENT_SECRET')}"
 tenant_id            = "{os.getenv('AZURE_TENANT_ID')}"
 project_location     = "{config_dict['region']}"
-repoName             = "{config_dict['repoName'] + '-' + config_dict['resourcesId'][:4]}"
+repoName             = "{config_dict['repoName'] + '-' + config_dict['resourceId'][:4]}"
 """
     with open(f"{terraform_dir}/terraform.auto.tfvars", "w") as f:
         f.write(tfvars_content)
