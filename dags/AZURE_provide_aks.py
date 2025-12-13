@@ -22,9 +22,9 @@ default_args = {
 }
 
 def fetch_from_database(**context):
-    request_id = context['dag_run'].conf.get('request_id')
-    if not request_id:
-        raise ValueError("No request_id received. Stop DAG run.")
+    resource_id = context['dag_run'].conf.get('resource_id')
+    if not resource_id:
+        raise ValueError("No resource_id received. Stop DAG run.")
 
     load_dotenv(expanduser('/opt/airflow/dags/.env'))
 
@@ -43,22 +43,22 @@ def fetch_from_database(**context):
     )
     cursor = connection.cursor()
 
-    cursor.execute(
-        'SELECT "resourcesId" FROM "Request" WHERE id = %s;',
-        (request_id,)
-    )
-    res = cursor.fetchone()
-    if not res:
-        raise ValueError(f"No request found for id={request_id}")
-    resourcesId = res[0]
+    # cursor.execute(
+    #     'SELECT "resourcesId" FROM "ProjectRequest" WHERE id = %s;',
+    #     (resource_id,)
+    # )
+    # res = cursor.fetchone()
+    # if not res:
+    #     raise ValueError(f"No request found for id={resource_id}")
+    # resourcesId = res[0]
 
     cursor.execute('''
         SELECT "name", "region", "resourceConfigId"
         FROM "Resources" WHERE id = %s;
-    ''', (resourcesId,))
+    ''', (resource_id,))
     resource = cursor.fetchone()
     if not resource:
-        raise ValueError(f"No resource found for resourcesId={resourcesId}")
+        raise ValueError(f"No resource found for resourcesId={resource_id}")
 
     repoName, region, resourceConfigId = resource
 
