@@ -22,7 +22,7 @@ default_args = {
 }
 
 def fetch_from_database(**context):
-    resource_id = context['dag_run'].conf.get('resourceId')
+    resource_id = context['dag_run'].conf.get('resource_id')
     if not resource_id:
         raise ValueError("No resource_id received. Stop DAG run.")
 
