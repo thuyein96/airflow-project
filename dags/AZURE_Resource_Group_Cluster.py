@@ -88,11 +88,11 @@ def fetch_from_database(resource_id):
         '''SELECT "name", "region", "cloudProvider", "resourceConfigId"
            FROM "Resources"
            WHERE id = %s;''',
-        (resources_Id,)
+        (resource_id,)
     )
     resource = cursor.fetchone()
     if not resource:
-        raise ValueError(f"No resource found for resourcesId={resources_Id}")
+        raise ValueError(f"No resource found for resourcesId={resource_id}")
 
     repoName, region, cloudProvider, resourceConfigId = resource
 
@@ -107,7 +107,7 @@ def fetch_from_database(resource_id):
     connection.close()
 
     configInfo = {
-        "resourcesId": resources_Id,
+        "resourcesId": resource_id,
         "repoName": repoName,
         "region": region,
         "cloudProvider": cloudProvider,
