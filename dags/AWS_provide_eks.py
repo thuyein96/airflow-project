@@ -387,20 +387,6 @@ def write_to_db(terraform_dir, configInfo, **context):
     with open(k8s_output_file, 'r') as f:
         k8s_state = json.load(f)
 
-    resource_id = context['dag_run'].conf.get('resource_id')
-    if not resource_id:
-        raise ValueError("No resource_id received. Stop DAG run.")
-
-    # Get owner info from Resources table
-    cursor.execute(
-        'SELECT "ownerId" FROM "Resources" WHERE id = %s;',
-        (resource_id,)
-    )
-    row = cursor.fetchone()
-    if not row:
-        raise ValueError(f"No Resources found for id={resource_id}")
-    owner_id = row[0]
-
     # Extract kubeconfig for each cluster from Terraform state
     for cluster in configInfo['k8s_clusters']:
         cluster_id = cluster['id']
@@ -438,7 +424,7 @@ def write_to_db(terraform_dir, configInfo, **context):
             'UPDATE "User" '
             'SET "kubeConfig" = %s, "clusterEndpoint" = %s, "terraformState" = %s '
             'WHERE "id" = %s;',
-            (kube_config_raw, cluster_endpoint, json.dumps(k8s_state), owner_id)
+            (kube_config_raw, cluster_endpoint, json.dumps(k8s_state), cluster_id)
         )
 
     connection.commit()
