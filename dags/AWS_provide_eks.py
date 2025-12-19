@@ -420,13 +420,6 @@ def write_to_db(terraform_dir, configInfo, **context):
             (kube_config_raw, cluster_endpoint, json.dumps(k8s_state), cluster_id)
         )
 
-        cursor.execute(
-            'UPDATE "User" '
-            'SET "kubeConfig" = %s, "clusterEndpoint" = %s, "terraformState" = %s '
-            'WHERE "id" = %s;',
-            (kube_config_raw, cluster_endpoint, json.dumps(k8s_state), cluster_id)
-        )
-
     connection.commit()
     cursor.close()
     connection.close()
