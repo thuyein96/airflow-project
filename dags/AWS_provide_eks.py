@@ -387,14 +387,18 @@ def write_to_db(terraform_dir, configInfo, **context):
     with open(k8s_output_file, 'r') as f:
         k8s_state = json.load(f)
 
-    request_id = context['dag_run'].conf.get('request_id')
-    if not request_id:
-        raise ValueError("No request_id received. Stop DAG run.")
+    resource_id = context['dag_run'].conf.get('resource_id')
+    if not resource_id:
+        raise ValueError("No resource_id received. Stop DAG run.")
 
-    cursor.execute('SELECT "ownerId" FROM "ProjectRequest" WHERE id = %s;', (request_id,))
+    # Get owner info from Resources table
+    cursor.execute(
+        'SELECT "ownerId" FROM "Resources" WHERE id = %s;',
+        (resource_id,)
+    )
     row = cursor.fetchone()
     if not row:
-        raise ValueError(f"No ProjectRequest found for id={request_id}")
+        raise ValueError(f"No Resources found for id={resource_id}")
     owner_id = row[0]
 
     # Extract kubeconfig for each cluster from Terraform state
