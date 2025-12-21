@@ -35,7 +35,7 @@ def rabbitmq_consumer():
     connection = pika.BlockingConnection(pika.URLParameters(rabbit_url))
     channel = connection.channel()
 
-    method_frame, header_frame, body = channel.basic_get(queue='destroy', auto_ack=True)
+    method_frame, header_frame, body = channel.basic_get(queue='destroyK8s', auto_ack=True)
     if method_frame:
         message = body.decode()
         obj = json.loads(message)
