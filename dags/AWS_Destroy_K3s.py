@@ -79,9 +79,9 @@ def repository_name(resource_id):
         connection.close()
 
 # -------------------------
-# Step 3: Check if EKS clusters exist
+# Step 3: Check if K3s clusters exist
 # -------------------------
-def check_eks_clusters(resource_id):
+def check_k3s_clusters(resource_id):
     load_dotenv(expanduser('/opt/airflow/dags/.env'))
 
     USER = os.getenv("DB_USER")
@@ -109,19 +109,19 @@ def check_eks_clusters(resource_id):
             raise ValueError(f"No resource found for id={resource_id}")
         resourceConfigId = res[0]
 
-        # Check for EKS clusters
+        # Check for K3s clusters
         cursor.execute(
             'SELECT id FROM "AwsK8sCluster" WHERE "resourceConfigId" = %s;',
             (resourceConfigId,)
         )
-        k8s_instances = cursor.fetchall()
-        k8s_count = len(k8s_instances)
+        k3s_instances = cursor.fetchall()
+        k3s_count = len(k3s_instances)
 
         cursor.close()
         connection.close()
 
-        if k8s_count > 0:
-            return 'terraform_destroy_eks'
+        if k3s_count > 0:
+            return 'terraform_destroy_k3s'
         else:
             return 'end'
     finally:
@@ -168,7 +168,7 @@ def supabase_delete_resource(resource_id):
             raise ValueError(f"No resource found for id={resource_id}")
         resourceConfigId = res[0]
 
-        # Delete EKS clusters
+        # Delete K3s clusters
         cursor.execute(
             'DELETE FROM "AwsK8sCluster" WHERE "resourceConfigId" = %s;',
             (resourceConfigId,)
@@ -200,7 +200,7 @@ def supabase_delete_resource(resource_id):
 # DAG Definition
 # -------------------------
 with DAG(
-    dag_id='AWS_Destroy_EKS',
+    dag_id='AWS_Destroy_K3s',
     default_args=default_args,
     schedule=None,
     catchup=False,
@@ -220,20 +220,20 @@ with DAG(
         op_args=["{{ ti.xcom_pull(task_ids='get_resource_id') }}"],
     )
 
-    # Step 3: Check if EKS clusters exist
+    # Step 3: Check if K3s clusters exist
     branch_task = BranchPythonOperator(
-        task_id='check_eks_clusters',
-        python_callable=check_eks_clusters,
+        task_id='check_k3s_clusters',
+        python_callable=check_k3s_clusters,
         op_args=["{{ ti.xcom_pull(task_ids='get_resource_id') }}"],
         retries=3,
         retry_delay=timedelta(minutes=5)
     )
 
-    # Step 4: Destroy EKS infrastructure
-    destroy_eks = BashOperator(
-        task_id="terraform_destroy_eks",
+    # Step 4: Destroy K3s infrastructure
+    destroy_k3s = BashOperator(
+        task_id="terraform_destroy_k3s",
         bash_command=(
-            'cd "/opt/airflow/dags/terraform/{{ ti.xcom_pull(task_ids=\'get_repository_name\') | trim | replace(\'"\',\'\') }}/k8s" && '
+            'cd "/opt/airflow/dags/terraform/{{ ti.xcom_pull(task_ids=\'get_repository_name\') | trim | replace(\'"\',\'\') }}/k3s" && '
             'terraform init && terraform destroy -auto-approve'
         ),
         env={
@@ -266,9 +266,9 @@ with DAG(
     # Step 7: End
     end = PythonOperator(
         task_id='end',
-        python_callable=lambda: print("EKS destruction complete"),
+        python_callable=lambda: print("K3s destruction complete"),
         trigger_rule='all_done'
     )
 
     # Workflow
-    get_resource_id >> get_repository_name >> branch_task >> [destroy_eks, end] >> cleanup_dir >> delete_resource
+    get_resource_id >> get_repository_name >> branch_task >> [destroy_k3s, end] >> cleanup_dir >> delete_resource
