@@ -630,8 +630,13 @@ def write_to_db(terraform_dir, configInfo, **context):
             #                 'private_ip': attributes.get('private_ip', '')
             #             })
 
+        if not master_public_ip:
+            print(f"Warning: No master found in Terraform state for cluster {cluster_id}")
+            continue
+
         # Fetch kubeconfig from master via SSH
         import subprocess
+        kubeconfig = None
         try:
             # Assuming key is in ~/.ssh/id_rsa
             result = subprocess.run(
@@ -651,16 +656,6 @@ def write_to_db(terraform_dir, configInfo, **context):
             if result.returncode == 0:
                 kubeconfig = result.stdout
                 print(f"✓ Retrieved kubeconfig for cluster {cluster_id}")
-                
-                # Store kubeconfig in database
-                cursor.execute(
-                    'UPDATE "AwsK8sCluster" '
-                    'SET "kubeConfig" = %s '
-                    'WHERE "id" = %s;',
-                    (kubeconfig, cluster_id)
-                )
-                connection.commit()
-                print(f"✓ Stored kubeconfig in database for cluster {cluster_id}")
             else:
                 print(f"✗ Failed to fetch kubeconfig from {master_public_ip}: {result.stderr}")
         except subprocess.TimeoutExpired:
@@ -668,24 +663,21 @@ def write_to_db(terraform_dir, configInfo, **context):
         except Exception as e:
             print(f"✗ Error fetching kubeconfig: {str(e)}")
 
-        if not master_public_ip:
-            print(f"Warning: No master found in Terraform state for cluster {cluster_id}")
-            continue
-
-        # cluster_info = {
-        #     "master": {
-        #         "public_ip": master_public_ip,
-        #         "private_ip": master_private_ip
-        #     },
-        #     "workers": worker_ips
-        # }
-
-        cursor.execute(
-            'UPDATE "AwsK8sCluster" '
-            'SET "clusterEndpoint" = %s, "terraformState" = %s '
-            'WHERE "id" = %s;',
-            (json.dumps(master_public_ip), json.dumps(k3s_state), cluster_id)
-        )
+        # Store cluster endpoint and terraform state
+        update_query = 'UPDATE "AwsK8sCluster" SET "clusterEndpoint" = %s, "terraformState" = %s'
+        params = [json.dumps(master_public_ip), json.dumps(k3s_state)]
+        
+        # Add kubeconfig if available
+        if kubeconfig:
+            update_query += ', "kubeConfig" = %s'
+            params.append(kubeconfig)
+        
+        update_query += ' WHERE "id" = %s;'
+        params.append(cluster_id)
+        
+        cursor.execute(update_query, tuple(params))
+        connection.commit()
+        print(f"✓ Updated cluster {cluster_id} in database")
 
     connection.commit()
     cursor.close()
