@@ -406,7 +406,7 @@ resource "aws_instance" "k3s_worker" {{
               sleep 30
               
               # Get master IP
-              MASTER_IP="${aws_instance.k3s_master[each.value.cluster_id].private_ip}"
+              MASTER_IP="${"$"}{{aws_instance.k3s_master[each.value.cluster_id].private_ip}}"
               
               # Get node token from master
               aws s3 cp s3://k3s-config-${{var.project_name}}/k3s-token.txt /tmp/k3s-token.txt || echo "Token not found, using default"
