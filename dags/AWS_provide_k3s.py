@@ -377,7 +377,7 @@ resource "aws_instance" "k3s_worker" {{
   for_each = {{
     for item in flatten([
       for cluster in var.k3s_clusters : [
-        for i in range(cluster.node_count - 1) : {{
+        for i in range(cluster.node_count) : {{
           cluster_id = cluster.id
           cluster_name = cluster.cluster_name
           node_size = cluster.node_size
