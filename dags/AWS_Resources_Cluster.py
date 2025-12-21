@@ -242,10 +242,10 @@ with DAG(
         python_callable=lambda ti: branch_resources(ti.xcom_pull(task_ids='get_config_info'))
     )
 
-    # Trigger EKS DAG
-    trigger_eks = TriggerDagRunOperator(
-        task_id="trigger_eks",
-        trigger_dag_id="AWS_terraform_k8s_provision",
+    # Trigger K3s DAG
+    trigger_k3s = TriggerDagRunOperator(
+        task_id="trigger_k3s",
+        trigger_dag_id="AWS_terraform_k3s_provision",
         conf={"resource_id": "{{ ti.xcom_pull(task_ids='get_resource_id') }}"},
         wait_for_completion=False,
         trigger_rule='all_success',
@@ -254,4 +254,4 @@ with DAG(
     end = EmptyOperator(task_id="end")
 
     # Workflow
-    get_resource_id >> get_config_info >> create_tf_dir >> write_tf_files >> terraform_apply >> branch_task >> trigger_eks >> end
+    get_resource_id >> get_config_info >> create_tf_dir >> write_tf_files >> terraform_apply >> branch_task >> trigger_k3s >> end
