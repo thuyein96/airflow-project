@@ -132,7 +132,7 @@ def check_k3s_clusters(resource_id):
 # Step 4: Cleanup folder
 # -------------------------
 def cleanup_directory(projectName):
-    directory_path = f"/opt/airflow/dags/terraform/{projectName}/k8s"
+    directory_path = f"/opt/airflow/dags/terraform/{projectName}/k3s"
     if os.path.exists(directory_path):
         shutil.rmtree(directory_path)
     return projectName
@@ -236,11 +236,6 @@ with DAG(
             'cd "/opt/airflow/dags/terraform/{{ ti.xcom_pull(task_ids=\'get_repository_name\') | trim | replace(\'"\',\'\') }}/k3s" && '
             'terraform init && terraform destroy -auto-approve'
         ),
-        env={
-            "AWS_ACCESS_KEY_ID": os.getenv('AWS_ACCESS_KEY'),
-            "AWS_SECRET_ACCESS_KEY": os.getenv('AWS_SECRET_KEY'),
-            "AWS_DEFAULT_REGION": os.getenv('AWS_DEFAULT_REGION'),
-        },
         retries=3,
         retry_delay=timedelta(minutes=5)
     )
