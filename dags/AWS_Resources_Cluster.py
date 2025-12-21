@@ -177,13 +177,13 @@ resource "aws_default_vpc" "default" {
 
 
 # -------------------------
-# Step 5: Trigger EKS
+# Step 5: Trigger K3s
 # -------------------------
 def branch_resources(configInfo):
     data = json.loads(configInfo)
     branches = []
     if data['k8sCount'] > 0:
-        branches.append('trigger_eks')
+        branches.append('trigger_k3s')
     if not branches:
         return 'end'
     return branches
