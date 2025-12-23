@@ -486,94 +486,6 @@ variable "k3s_clusters" {{
     with open(f"{terraform_dir}/variables.tf", "w") as f:
         f.write(variables_tf)
 
-# def fetch_kubeconfig(terraform_dir, configInfo, **context):
-#     """Fetch kubeconfig from K3s master node and store in database"""
-#     if isinstance(configInfo, str):
-#         configInfo = ast.literal_eval(configInfo)
-
-#     load_dotenv(expanduser('/opt/airflow/dags/.env'))
-
-#     USER = os.getenv("DB_USER")
-#     PASSWORD = os.getenv("DB_PASSWORD")
-#     HOST = os.getenv("DB_HOST")
-#     PORT = os.getenv("DB_PORT")
-#     DBNAME = os.getenv("DB_NAME")
-
-#     k3s_output_file = Path(terraform_dir) / "terraform.tfstate"
-#     if not k3s_output_file.exists():
-#         raise FileNotFoundError(f"Terraform state file not found at {k3s_output_file}")
-
-#     with open(k3s_output_file, 'r') as f:
-#         k3s_state = json.load(f)
-
-#     connection = psycopg2.connect(
-#         user=USER, password=PASSWORD,
-#         host=HOST, port=PORT, dbname=DBNAME
-#     )
-#     cursor = connection.cursor()
-
-#     # Extract master IPs and fetch kubeconfig
-#     for cluster in configInfo['k3s_clusters']:
-#         cluster_id = cluster['id']
-#         master_public_ip = None
-
-#         # Find master public IP from Terraform state
-#         for resource in k3s_state.get('resources', []):
-#             if resource.get('type') == 'aws_instance' and resource.get('name') == 'k3s_master':
-#                 for instance in resource.get('instances', []):
-#                     attributes = instance.get('attributes', {})
-#                     index_key = instance.get('index_key')
-
-#                     if index_key == cluster_id:
-#                         master_public_ip = attributes.get('public_ip', '')
-#                         break
-
-#         if not master_public_ip:
-#             print(f"Warning: No master public IP found for cluster {cluster_id}")
-#             continue
-
-#         # Fetch kubeconfig from master via SSH
-#         import subprocess
-#         try:
-#             # Assuming key is in ~/.ssh/id_rsa
-#             result = subprocess.run(
-#                 [
-#                     'ssh',
-#                     '-o', 'StrictHostKeyChecking=no',
-#                     '-o', 'UserKnownHostsFile=/dev/null',
-#                     '-i', expanduser('~/.ssh/id_rsa'),
-#                     f'ubuntu@{master_public_ip}',
-#                     'cat /home/ubuntu/.kube/config'
-#                 ],
-#                 capture_output=True,
-#                 text=True,
-#                 timeout=30
-#             )
-            
-#             if result.returncode == 0:
-#                 kubeconfig = result.stdout
-#                 print(f"✓ Retrieved kubeconfig for cluster {cluster_id}")
-                
-#                 # Store kubeconfig in database
-#                 cursor.execute(
-#                     'UPDATE "AwsK8sCluster" '
-#                     'SET "kubeConfig" = %s '
-#                     'WHERE "id" = %s;',
-#                     (kubeconfig, cluster_id)
-#                 )
-#                 connection.commit()
-#                 print(f"✓ Stored kubeconfig in database for cluster {cluster_id}")
-#             else:
-#                 print(f"✗ Failed to fetch kubeconfig from {master_public_ip}: {result.stderr}")
-                
-#         except subprocess.TimeoutExpired:
-#             print(f"✗ SSH connection timed out to {master_public_ip}")
-#         except Exception as e:
-#             print(f"✗ Error fetching kubeconfig: {str(e)}")
-
-#     cursor.close()
-#     connection.close()
-
 def write_to_db(terraform_dir, configInfo, **context):
     if isinstance(configInfo, str):
         configInfo = ast.literal_eval(configInfo)
@@ -618,17 +530,6 @@ def write_to_db(terraform_dir, configInfo, **context):
                         master_public_ip = attributes.get('public_ip', '')
                         master_private_ip = attributes.get('private_ip', '')
                         break
-
-            # if resource.get('type') == 'aws_instance' and resource.get('name') == 'k3s_worker':
-            #     for instance in resource.get('instances', []):
-            #         attributes = instance.get('attributes', {})
-            #         index_key = instance.get('index_key')
-
-            #         if index_key.startswith(cluster_id):
-            #             worker_ips.append({
-            #                 'public_ip': attributes.get('public_ip', ''),
-            #                 'private_ip': attributes.get('private_ip', '')
-            #             })
 
         if not master_public_ip:
             print(f"Warning: No master found in Terraform state for cluster {cluster_id}")
@@ -728,15 +629,6 @@ with DAG(
             "{{ ti.xcom_pull(task_ids='fetch_config') }}",
         ],
     )
-
-    # fetch_kubeconfig_task = PythonOperator(
-    #     task_id="fetch_kubeconfig",
-    #     python_callable=fetch_kubeconfig,
-    #     op_args=[
-    #         "{{ ti.xcom_pull(task_ids='create_terraform_dir') }}",
-    #         "{{ ti.xcom_pull(task_ids='fetch_config') }}",
-    #     ],
-    # )
 
     terraform_cleanup = BashOperator(
         task_id="terraform_cleanup",
