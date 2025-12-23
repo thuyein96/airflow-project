@@ -553,52 +553,63 @@ def write_to_db(terraform_dir, configInfo, **context):
         # Fetch kubeconfig from master via SSH
         import subprocess
         import time
+        import tempfile
         kubeconfig = None
         
-        # Retry loop to wait for K3s installation to complete (up to 5 minutes)
-        max_retries = 10
-        for attempt in range(max_retries):
-            try:
-                print(f"Attempt {attempt+1}/{max_retries} to fetch kubeconfig from {master_public_ip}...")
-                
-                # Check if key exists
-                key_path = '/opt/airflow/dags/.ssh/id_rsa'
-                if not os.path.exists(key_path):
-                    print(f"  Warning: SSH key not found at {key_path}")
-                
-                result = subprocess.run(
-                    [
-                        'ssh',
-                        '-o', 'StrictHostKeyChecking=no',
-                        '-o', 'UserKnownHostsFile=/dev/null',
-                        '-o', 'ConnectTimeout=10', # Fast fail on connection
-                        '-i', '/opt/airflow/dags/.ssh/id_rsa',
-                        f'ubuntu@{master_public_ip}',
-                        # Check if file exists and cat it, otherwise fail
-                        'if [ -f /home/ubuntu/.kube/config ]; then cat /home/ubuntu/.kube/config; else exit 1; fi'
-                    ],
-                    capture_output=True,
-                    text=True,
-                    timeout=10
-                )
-                
-                if result.returncode == 0 and result.stdout.strip():
-                    kubeconfig = result.stdout
-                    # Replace localhost/127.0.0.1 with public IP
-                    kubeconfig = kubeconfig.replace('127.0.0.1', master_public_ip)
-                    kubeconfig = kubeconfig.replace('localhost', master_public_ip)
-                    print(f"✓ Retrieved kubeconfig for cluster {cluster_id}")
-                    break
-                else:
-                    print(f"  Kubeconfig not ready yet. stderr: {result.stderr.strip() if result.stderr else 'None'}")
-            except subprocess.TimeoutExpired:
-                print(f"  SSH connection timed out.")
-            except Exception as e:
-                print(f"  Error fetching kubeconfig: {str(e)}")
+        # Create a temporary private key file with correct permissions (600)
+        # This is necessary because the mounted key file might have different ownership/permissions
+        # that cause SSH to fail or Airflow to be unable to read it.
+        tmp_key_path = None
+        try:
+            with tempfile.NamedTemporaryFile(mode='w', delete=False) as tmp_key:
+                with open('/opt/airflow/dags/.ssh/id_rsa', 'r') as key_file:
+                    tmp_key.write(key_file.read())
+                tmp_key_path = tmp_key.name
             
-            if attempt < max_retries - 1:
-                print("  Waiting 30 seconds before next attempt...")
-                time.sleep(30)
+            os.chmod(tmp_key_path, 0o600)
+
+            # Retry loop to wait for K3s installation to complete (up to 5 minutes)
+            max_retries = 10
+            for attempt in range(max_retries):
+                try:
+                    print(f"Attempt {attempt+1}/{max_retries} to fetch kubeconfig from {master_public_ip}...")
+                    
+                    result = subprocess.run(
+                        [
+                            'ssh',
+                            '-o', 'StrictHostKeyChecking=no',
+                            '-o', 'UserKnownHostsFile=/dev/null',
+                            '-o', 'ConnectTimeout=10', # Fast fail on connection
+                            '-i', tmp_key_path,
+                            f'ubuntu@{master_public_ip}',
+                            # Check if file exists and cat it, otherwise fail
+                            'if [ -f /home/ubuntu/.kube/config ]; then cat /home/ubuntu/.kube/config; else exit 1; fi'
+                        ],
+                        capture_output=True,
+                        text=True,
+                        timeout=10
+                    )
+                    
+                    if result.returncode == 0 and result.stdout.strip():
+                        kubeconfig = result.stdout
+                        # Replace localhost/127.0.0.1 with public IP
+                        kubeconfig = kubeconfig.replace('127.0.0.1', master_public_ip)
+                        kubeconfig = kubeconfig.replace('localhost', master_public_ip)
+                        print(f"✓ Retrieved kubeconfig for cluster {cluster_id}")
+                        break
+                    else:
+                        print(f"  Kubeconfig not ready yet. stderr: {result.stderr.strip() if result.stderr else 'None'}")
+                except subprocess.TimeoutExpired:
+                    print(f"  SSH connection timed out.")
+                except Exception as e:
+                    print(f"  Error fetching kubeconfig: {str(e)}")
+                
+                if attempt < max_retries - 1:
+                    print("  Waiting 30 seconds before next attempt...")
+                    time.sleep(30)
+        finally:
+            if tmp_key_path and os.path.exists(tmp_key_path):
+                os.unlink(tmp_key_path)
 
         # Store cluster endpoint and terraform state
         update_query = 'UPDATE "AwsK8sCluster" SET "clusterEndpoint" = %s, "terraformState" = %s'
