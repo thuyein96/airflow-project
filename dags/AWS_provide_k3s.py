@@ -325,7 +325,7 @@ resource "aws_instance" "k3s_master" {{
               apt-get install -y curl wget git
               
               # Install K3s master (keep Traefik enabled)
-              curl -sfL https://get.k3s.io | sh -
+              curl -sfL https://get.k3s.io | sh -s - --write-kubeconfig-mode 644
               
               # Wait for K3s to be ready
               sleep 15
@@ -584,6 +584,9 @@ def write_to_db(terraform_dir, configInfo, **context):
                 
                 if result.returncode == 0 and result.stdout.strip():
                     kubeconfig = result.stdout
+                    # Replace localhost/127.0.0.1 with public IP
+                    kubeconfig = kubeconfig.replace('127.0.0.1', master_public_ip)
+                    kubeconfig = kubeconfig.replace('localhost', master_public_ip)
                     print(f"✓ Retrieved kubeconfig for cluster {cluster_id}")
                     break
                 else:
