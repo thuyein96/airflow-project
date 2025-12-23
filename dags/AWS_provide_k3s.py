@@ -324,8 +324,11 @@ resource "aws_instance" "k3s_master" {{
               apt-get update
               apt-get install -y curl wget git
               
+              # Get Public IP for TLS SAN
+              PUBLIC_IP=$(curl -s http://169.254.169.254/latest/meta-data/public-ipv4)
+
               # Install K3s master (keep Traefik enabled)
-              curl -sfL https://get.k3s.io | sh -s - --write-kubeconfig-mode 644
+              curl -sfL https://get.k3s.io | sh -s - --write-kubeconfig-mode 644 --tls-san $PUBLIC_IP
               
               # Wait for K3s to be ready
               sleep 15
@@ -595,6 +598,11 @@ def write_to_db(terraform_dir, configInfo, **context):
                         # Replace localhost/127.0.0.1 with public IP
                         kubeconfig = kubeconfig.replace('127.0.0.1', master_public_ip)
                         kubeconfig = kubeconfig.replace('localhost', master_public_ip)
+
+                        # Modify kubeconfig to skip TLS verification (solves self-signed cert errors)
+                        import re
+                        kubeconfig = re.sub(r'certificate-authority-data:.*', 'insecure-skip-tls-verify: true', kubeconfig)
+
                         print(f"✓ Retrieved kubeconfig for cluster {cluster_id}")
                         break
                     else:
