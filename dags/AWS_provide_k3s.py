@@ -344,9 +344,8 @@ resource "aws_instance" "k3s_master" {{
                 sleep 5
               done
               
-              # Install MetalLB
-              /usr/local/bin/kubectl --kubeconfig=/etc/rancher/k3s/k3s.yaml apply -f https://raw.githubusercontent.com/metallb/metallb/v0.13.10/config/manifests/namespace.yaml
-              /usr/local/bin/kubectl --kubeconfig=/etc/rancher/k3s/k3s.yaml apply -f https://raw.githubusercontent.com/metallb/metallb/v0.13.10/config/manifests/metallb.yaml
+              # Install MetalLB (Corrected for v0.13.10)
+              /usr/local/bin/kubectl --kubeconfig=/etc/rancher/k3s/k3s.yaml apply -f https://raw.githubusercontent.com/metallb/metallb/v0.13.10/config/manifests/metallb-native.yaml
               
               # Wait for MetalLB to be ready
               sleep 10
