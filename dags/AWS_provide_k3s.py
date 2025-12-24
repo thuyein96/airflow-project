@@ -600,8 +600,8 @@ def write_to_db(terraform_dir, configInfo, **context):
                         kubeconfig = kubeconfig.replace('localhost', master_public_ip)
 
                         # Modify kubeconfig to skip TLS verification (solves self-signed cert errors)
-                        import re
-                        kubeconfig = re.sub(r'certificate-authority-data:.*', 'insecure-skip-tls-verify: true', kubeconfig)
+                        # import re
+                        # kubeconfig = re.sub(r'certificate-authority-data:.*', 'insecure-skip-tls-verify: true', kubeconfig)
 
                         print(f"✓ Retrieved kubeconfig for cluster {cluster_id}")
                         break
