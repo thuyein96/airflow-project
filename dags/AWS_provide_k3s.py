@@ -347,8 +347,11 @@ resource "aws_instance" "k3s_master" {{
               # Install MetalLB (Corrected for v0.13.10)
               /usr/local/bin/kubectl --kubeconfig=/etc/rancher/k3s/k3s.yaml apply -f https://raw.githubusercontent.com/metallb/metallb/v0.13.10/config/manifests/metallb-native.yaml
               
+              echo "Waiting for MetalLB Controller to start..."
+              /usr/local/bin/kubectl --kubeconfig=/etc/rancher/k3s/k3s.yaml -n metallb-system wait --for=condition=ready pod -l app=metallb,component=controller --timeout=120s
+
               # Wait for MetalLB to be ready
-              sleep 10
+              sleep 20
               
               # Configure MetalLB with IP pool
               cat <<'METALLB_CONFIG' | /usr/local/bin/kubectl --kubeconfig=/etc/rancher/k3s/k3s.yaml apply -f -
