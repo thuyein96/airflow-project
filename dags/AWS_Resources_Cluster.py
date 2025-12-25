@@ -131,18 +131,21 @@ def write_terraform_files(terraform_dir, configInfo):
 
     load_dotenv(expanduser('/opt/airflow/dags/.env'))
 
-    # terraform.auto.tfvars
-    tfvars_content = f"""
+        project_name = f"{config_dict['repoName']}-{config_dict['resourceId'][:4]}"
+
+        # terraform.auto.tfvars
+        tfvars_content = f"""
 access_key       = "{os.getenv('AWS_ACCESS_KEY')}"
 secret_key       = "{os.getenv('AWS_SECRET_KEY')}"
 project_location = "{config_dict['region']}"
-repoName         = "{config_dict['repoName']}-{config_dict['resourceId'][:4]}"
+project_name     = "{project_name}"
 """
     with open(f"{terraform_dir}/terraform.auto.tfvars", "w") as f:
         f.write(tfvars_content)
 
-    # main.tf for VPC
-    main_tf = """
+        # main.tf for shared cluster networking (VPC/Subnets/IGW/Routes)
+        # This replaces the old aws_default_vpc approach.
+        main_tf = """
 terraform {
   required_providers {
     aws = {
@@ -162,12 +165,67 @@ provider "aws" {
 variable "access_key" {}
 variable "secret_key" {}
 variable "project_location" {}
-variable "repoName" {}
+variable "project_name" {}
 
-resource "aws_default_vpc" "default" {
-  tags = {
-    Name = var.repoName
-  }
+resource "aws_vpc" "k3s_vpc" {
+    cidr_block           = "10.0.0.0/16"
+    enable_dns_hostnames = true
+    enable_dns_support   = true
+
+    tags = {
+        Name = "${var.project_name}-k3s-vpc"
+    }
+}
+
+resource "aws_internet_gateway" "k3s_igw" {
+    vpc_id = aws_vpc.k3s_vpc.id
+
+    tags = {
+        Name = "${var.project_name}-k3s-igw"
+    }
+}
+
+data "aws_availability_zones" "available" {
+    state = "available"
+}
+
+resource "aws_subnet" "k3s_subnet" {
+    count                   = 2
+    vpc_id                  = aws_vpc.k3s_vpc.id
+    cidr_block              = "10.0.${count.index}.0/24"
+    availability_zone       = data.aws_availability_zones.available.names[count.index]
+    map_public_ip_on_launch = true
+
+    tags = {
+        Name = "${var.project_name}-k3s-subnet-${count.index}"
+    }
+}
+
+resource "aws_route_table" "k3s_rt" {
+    vpc_id = aws_vpc.k3s_vpc.id
+
+    route {
+        cidr_block = "0.0.0.0/0"
+        gateway_id = aws_internet_gateway.k3s_igw.id
+    }
+
+    tags = {
+        Name = "${var.project_name}-k3s-rt"
+    }
+}
+
+resource "aws_route_table_association" "k3s_rta" {
+    count          = 2
+    subnet_id      = aws_subnet.k3s_subnet[count.index].id
+    route_table_id = aws_route_table.k3s_rt.id
+}
+
+output "k3s_vpc_id" {
+    value = aws_vpc.k3s_vpc.id
+}
+
+output "k3s_subnet_ids" {
+    value = aws_subnet.k3s_subnet[*].id
 }
 """
     with open(f"{terraform_dir}/main.tf", "w") as f:

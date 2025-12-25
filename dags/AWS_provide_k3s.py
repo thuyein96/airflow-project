@@ -144,67 +144,33 @@ resource "aws_key_pair" "k3s_auth" {{
   public_key = "{ssh_public_key}"
 }}
 
-# VPC for K3s
-resource "aws_vpc" "k3s_vpc" {{
-  cidr_block           = "10.0.0.0/16"
-  enable_dns_hostnames = true
-  enable_dns_support   = true
-  
-  tags = {{
-    Name = "${{var.project_name}}-k3s-vpc"
+# Shared VPC/Subnets are created by AWS_Resources_Cluster (rg) Terraform.
+# Lookup by tags so this module doesn't create a second VPC.
+data "aws_vpc" "k3s_vpc" {{
+  filter {{
+    name   = "tag:Name"
+    values = ["${{var.project_name}}-k3s-vpc"]
   }}
 }}
 
-# Internet Gateway
-resource "aws_internet_gateway" "k3s_igw" {{
-  vpc_id = aws_vpc.k3s_vpc.id
-  
-  tags = {{
-    Name = "${{var.project_name}}-k3s-igw"
+data "aws_subnet" "k3s_subnet_0" {{
+  filter {{
+    name   = "tag:Name"
+    values = ["${{var.project_name}}-k3s-subnet-0"]
   }}
 }}
 
-# Subnets
-data "aws_availability_zones" "available" {{
-  state = "available"
-}}
-
-resource "aws_subnet" "k3s_subnet" {{
-  count                   = 2
-  vpc_id                  = aws_vpc.k3s_vpc.id
-  cidr_block              = "10.0.${{count.index}}.0/24"
-  availability_zone       = data.aws_availability_zones.available.names[count.index]
-  map_public_ip_on_launch = true
-  
-  tags = {{
-    Name = "${{var.project_name}}-k3s-subnet-${{count.index}}"
+data "aws_subnet" "k3s_subnet_1" {{
+  filter {{
+    name   = "tag:Name"
+    values = ["${{var.project_name}}-k3s-subnet-1"]
   }}
-}}
-
-# Route Table
-resource "aws_route_table" "k3s_rt" {{
-  vpc_id = aws_vpc.k3s_vpc.id
-  
-  route {{
-    cidr_block = "0.0.0.0/0"
-    gateway_id = aws_internet_gateway.k3s_igw.id
-  }}
-  
-  tags = {{
-    Name = "${{var.project_name}}-k3s-rt"
-  }}
-}}
-
-resource "aws_route_table_association" "k3s_rta" {{
-  count          = 2
-  subnet_id      = aws_subnet.k3s_subnet[count.index].id
-  route_table_id = aws_route_table.k3s_rt.id
 }}
 
 # Security Group for K3s
 resource "aws_security_group" "k3s_sg" {{
   name   = "${{var.project_name}}-k3s-sg"
-  vpc_id = aws_vpc.k3s_vpc.id
+  vpc_id = data.aws_vpc.k3s_vpc.id
 
   # Allow SSH
   ingress {{
@@ -246,7 +212,7 @@ resource "aws_security_group" "k3s_sg" {{
 # Edge Security Group (public-facing Traefik)
 resource "aws_security_group" "edge_sg" {{
   name   = "${{var.project_name}}-edge-sg"
-  vpc_id = aws_vpc.k3s_vpc.id
+  vpc_id = data.aws_vpc.k3s_vpc.id
 
   ingress {{
     from_port   = 22
@@ -332,7 +298,7 @@ resource "aws_instance" "k3s_master" {{
   ami                    = data.aws_ami.ubuntu.id
   instance_type          = "t3.medium"
   iam_instance_profile   = aws_iam_instance_profile.k3s_profile.name
-  subnet_id              = aws_subnet.k3s_subnet[0].id
+  subnet_id              = data.aws_subnet.k3s_subnet_0.id
   vpc_security_group_ids = [aws_security_group.k3s_sg.id]
   
   associate_public_ip_address = true
@@ -386,7 +352,7 @@ resource "aws_instance" "k3s_master" {{
     ClusterName = each.value.cluster_name
   }}
 
-  depends_on = [aws_internet_gateway.k3s_igw]
+  # VPC networking is provisioned by AWS_Resources_Cluster.
 }}
 
 # Shared Edge VM running Traefik (one per VPC/DAG run)
@@ -395,7 +361,7 @@ resource "aws_instance" "k3s_edge" {{
   ami                    = data.aws_ami.ubuntu.id
   instance_type          = "t3.micro"
   iam_instance_profile   = aws_iam_instance_profile.k3s_profile.name
-  subnet_id              = aws_subnet.k3s_subnet[0].id
+  subnet_id              = data.aws_subnet.k3s_subnet_0.id
   vpc_security_group_ids = [aws_security_group.edge_sg.id]
 
   associate_public_ip_address = true
@@ -503,7 +469,7 @@ resource "aws_instance" "k3s_worker" {{
   ami                    = data.aws_ami.ubuntu.id
   instance_type          = each.value.node_size
   iam_instance_profile   = aws_iam_instance_profile.k3s_profile.name
-  subnet_id              = aws_subnet.k3s_subnet[each.value.index % 2].id
+  subnet_id              = each.value.index % 2 == 0 ? data.aws_subnet.k3s_subnet_0.id : data.aws_subnet.k3s_subnet_1.id
   vpc_security_group_ids = [aws_security_group.k3s_sg.id]
   
   associate_public_ip_address = true

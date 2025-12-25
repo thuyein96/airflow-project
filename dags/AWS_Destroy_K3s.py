@@ -6,6 +6,7 @@ import shutil
 from airflow import DAG
 from airflow.operators.python import PythonOperator, BranchPythonOperator
 from airflow.operators.bash import BashOperator
+from airflow.operators.empty import EmptyOperator
 from datetime import datetime, timedelta
 from dotenv import load_dotenv
 from os.path import expanduser
@@ -35,6 +36,7 @@ def rabbitmq_consumer():
     connection = pika.BlockingConnection(pika.URLParameters(rabbit_url))
     channel = connection.channel()
 
+    # Queue name kept as-is (current producer uses destroyK8s)
     method_frame, header_frame, body = channel.basic_get(queue='destroyK8s', auto_ack=True)
     if method_frame:
         message = body.decode()
@@ -44,7 +46,7 @@ def rabbitmq_consumer():
         connection.close()
         return resource_id
     else:
-        print("[x] No message in queue")
+        print("[x] No message in destroyK8s queue")
         connection.close()
         return None
 
@@ -123,7 +125,7 @@ def check_k3s_clusters(resource_id):
         if k3s_count > 0:
             return 'terraform_destroy_k3s'
         else:
-            return 'end'
+            return 'skip_destroy'
     finally:
         cursor.close()
         connection.close()
@@ -133,6 +135,12 @@ def check_k3s_clusters(resource_id):
 # -------------------------
 def cleanup_directory(projectName):
     directory_path = f"/opt/airflow/dags/terraform/{projectName}/k3s"
+    if os.path.exists(directory_path):
+        shutil.rmtree(directory_path)
+    return projectName
+
+def cleanup_rg_directory(projectName):
+    directory_path = f"/opt/airflow/dags/terraform/{projectName}/rg"
     if os.path.exists(directory_path):
         shutil.rmtree(directory_path)
     return projectName
@@ -229,12 +237,27 @@ with DAG(
         retry_delay=timedelta(minutes=5)
     )
 
+    skip_destroy = EmptyOperator(task_id="skip_destroy")
+
     # Step 4: Destroy K3s infrastructure
     destroy_k3s = BashOperator(
         task_id="terraform_destroy_k3s",
         bash_command=(
-            'cd "/opt/airflow/dags/terraform/{{ ti.xcom_pull(task_ids=\'get_repository_name\') | trim | replace(\'"\',\'\') }}/k3s" && '
-            'terraform init && terraform destroy -auto-approve'
+            'TF_DIR="/opt/airflow/dags/terraform/{{ ti.xcom_pull(task_ids=\'get_repository_name\') | trim | replace(\'"\',\'\') }}/k3s"; '
+            'if [ -d "$TF_DIR" ]; then cd "$TF_DIR" && terraform init -input=false && terraform destroy -auto-approve -input=false; '
+            'else echo "[x] No k3s terraform dir: $TF_DIR"; fi'
+        ),
+        retries=3,
+        retry_delay=timedelta(minutes=5)
+    )
+
+    # Destroy shared VPC (created by AWS_Resources_Cluster in /rg)
+    destroy_rg = BashOperator(
+        task_id="terraform_destroy_rg",
+        bash_command=(
+            'TF_DIR="/opt/airflow/dags/terraform/{{ ti.xcom_pull(task_ids=\'get_repository_name\') | trim | replace(\'"\',\'\') }}/rg"; '
+            'if [ -d "$TF_DIR" ]; then cd "$TF_DIR" && terraform init -input=false && terraform destroy -auto-approve -input=false; '
+            'else echo "[x] No rg terraform dir: $TF_DIR"; fi'
         ),
         retries=3,
         retry_delay=timedelta(minutes=5)
@@ -245,7 +268,14 @@ with DAG(
         task_id="cleanup_dir",
         python_callable=cleanup_directory,
         op_args=["{{ ti.xcom_pull(task_ids='get_repository_name') }}"],
-        trigger_rule='none_failed_min_one_success',
+        trigger_rule='all_done',
+    )
+
+    cleanup_rg_dir = PythonOperator(
+        task_id="cleanup_rg_dir",
+        python_callable=cleanup_rg_directory,
+        op_args=["{{ ti.xcom_pull(task_ids='get_repository_name') }}"],
+        trigger_rule='all_done',
     )
 
     # Step 6: Delete database records
@@ -258,12 +288,14 @@ with DAG(
         retry_delay=timedelta(minutes=5)
     )
 
-    # Step 7: End
-    end = PythonOperator(
-        task_id='end',
-        python_callable=lambda: print("K3s destruction complete"),
-        trigger_rule='all_done'
-    )
+    end = EmptyOperator(task_id="end")
 
-    # Workflow
-    get_resource_id >> get_repository_name >> branch_task >> [destroy_k3s, end] >> cleanup_dir >> delete_resource
+    get_resource_id >> get_repository_name >> branch_task
+    branch_task >> destroy_k3s
+    branch_task >> skip_destroy
+
+    # Always attempt to destroy shared networking after either branch
+    destroy_k3s >> destroy_rg
+    skip_destroy >> destroy_rg
+
+    destroy_rg >> cleanup_dir >> cleanup_rg_dir >> delete_resource >> end
