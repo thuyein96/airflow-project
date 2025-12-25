@@ -122,7 +122,10 @@ k3s_clusters     = {json.dumps(k3s_clusters, indent=4)}
         raise ValueError("Public key not found at /opt/airflow/dags/.ssh/id_rsa.pub")
 
     # main.tf
-    main_tf_content = f"""
+    # NOTE: This is intentionally NOT an f-string because the Terraform template contains
+    # many braces (e.g. `${...}`, `%{ for ... }`) which can trip Python's f-string parser.
+    # We keep the content with doubled braces and then unescape `{{`/`}}` -> `{`/`}`.
+    main_tf_template = """
 terraform {{
   required_providers {{
     aws = {{
@@ -141,7 +144,7 @@ provider "aws" {{
 # Define the Key Pair
 resource "aws_key_pair" "k3s_auth" {{
   key_name   = "${{var.project_name}}-key"
-  public_key = "{ssh_public_key}"
+  public_key = "__SSH_PUBLIC_KEY__"
 }}
 
 # Shared VPC/Subnets are created by AWS_Resources_Cluster (rg) Terraform.
@@ -525,6 +528,13 @@ output "k3s_workers" {{
   }}
 }}
 """
+
+    main_tf_content = (
+        main_tf_template
+        .replace("{{", "{")
+        .replace("}}", "}")
+        .replace("__SSH_PUBLIC_KEY__", ssh_public_key)
+    )
 
     with open(f"{terraform_dir}/main.tf", "w") as f:
         f.write(main_tf_content)
