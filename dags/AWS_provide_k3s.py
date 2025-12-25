@@ -222,22 +222,6 @@ resource "aws_security_group" "k3s_sg" {{
     cidr_blocks = ["0.0.0.0/0"]
   }}
 
-  # Allow HTTP (80)
-  ingress {{
-    from_port   = 80
-    to_port     = 80
-    protocol    = "tcp"
-    cidr_blocks = ["0.0.0.0/0"]
-  }}
-
-  # Allow HTTPS (443)
-  ingress {{
-    from_port   = 443
-    to_port     = 443
-    protocol    = "tcp"
-    cidr_blocks = ["0.0.0.0/0"]
-  }}
-
   # Allow internal VPC traffic
   ingress {{
     from_port   = 0
@@ -256,6 +240,44 @@ resource "aws_security_group" "k3s_sg" {{
 
   tags = {{
     Name = "${{var.project_name}}-k3s-sg"
+  }}
+}}
+
+# Edge Security Group (public-facing Traefik)
+resource "aws_security_group" "edge_sg" {{
+  name   = "${{var.project_name}}-edge-sg"
+  vpc_id = aws_vpc.k3s_vpc.id
+
+  ingress {{
+    from_port   = 22
+    to_port     = 22
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }}
+
+  ingress {{
+    from_port   = 80
+    to_port     = 80
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }}
+
+  ingress {{
+    from_port   = 443
+    to_port     = 443
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }}
+
+  egress {{
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
+  }}
+
+  tags = {{
+    Name = "${{var.project_name}}-edge-sg"
   }}
 }}
 
@@ -344,39 +366,15 @@ resource "aws_instance" "k3s_master" {{
                 sleep 5
               done
               
-              # Install MetalLB (Corrected for v0.13.10)
-              /usr/local/bin/kubectl --kubeconfig=/etc/rancher/k3s/k3s.yaml apply -f https://raw.githubusercontent.com/metallb/metallb/v0.13.10/config/manifests/metallb-native.yaml
-              
-              echo "Waiting for MetalLB Controller to start..."
-              /usr/local/bin/kubectl --kubeconfig=/etc/rancher/k3s/k3s.yaml -n metallb-system wait --for=condition=ready pod -l app=metallb,component=controller --timeout=120s
-
-              # Wait for MetalLB to be ready
-              sleep 20
-              
-              # Configure MetalLB with IP pool
-              cat <<'METALLB_CONFIG' | /usr/local/bin/kubectl --kubeconfig=/etc/rancher/k3s/k3s.yaml apply -f -
-              apiVersion: metallb.io/v1beta1
-              kind: IPAddressPool
-              metadata:
-                name: first-pool
-                namespace: metallb-system
-              spec:
-                addresses:
-                - 10.0.0.100-10.0.0.200
-              ---
-              apiVersion: metallb.io/v1beta1
-              kind: L2Advertisement
-              metadata:
-                name: example
-                namespace: metallb-system
-              METALLB_CONFIG
-              
               # Verify CoreDNS is running (CoreDNS comes with K3s by default)
               sleep 5
               /usr/local/bin/kubectl --kubeconfig=/etc/rancher/k3s/k3s.yaml get pods -n kube-system | grep coredns
               
               # Verify Traefik is running
               /usr/local/bin/kubectl --kubeconfig=/etc/rancher/k3s/k3s.yaml get pods -n kube-system | grep traefik
+
+              # Expose Traefik via fixed NodePorts for an external edge proxy (no MetalLB)
+              /usr/local/bin/kubectl --kubeconfig=/etc/rancher/k3s/k3s.yaml -n kube-system patch svc traefik --type merge -p '{"spec":{"type":"NodePort","ports":[{"name":"web","port":80,"protocol":"TCP","targetPort":8000,"nodePort":30080},{"name":"websecure","port":443,"protocol":"TCP","targetPort":8443,"nodePort":30443}]}}'
               
               # Get node token for workers
               cat /var/lib/rancher/k3s/server/node-token > /tmp/k3s-token.txt
@@ -389,6 +387,102 @@ resource "aws_instance" "k3s_master" {{
   }}
 
   depends_on = [aws_internet_gateway.k3s_igw]
+}}
+
+# Shared Edge VM running Traefik (one per VPC/DAG run)
+# Routes by host pattern: `<app>.<cluster_name>.orchestronic.dev` -> that cluster's in-cluster Traefik (NodePort 30080)
+resource "aws_instance" "k3s_edge" {{
+  ami                    = data.aws_ami.ubuntu.id
+  instance_type          = "t3.micro"
+  iam_instance_profile   = aws_iam_instance_profile.k3s_profile.name
+  subnet_id              = aws_subnet.k3s_subnet[0].id
+  vpc_security_group_ids = [aws_security_group.edge_sg.id]
+
+  associate_public_ip_address = true
+  key_name = aws_key_pair.k3s_auth.key_name
+
+  user_data = base64encode(<<-EOF
+              #!/bin/bash
+              set -e
+              apt-get update
+              apt-get install -y ca-certificates curl gnupg
+
+              # Install Docker
+              install -m 0755 -d /etc/apt/keyrings
+              curl -fsSL https://download.docker.com/linux/ubuntu/gpg | gpg --dearmor -o /etc/apt/keyrings/docker.gpg
+              chmod a+r /etc/apt/keyrings/docker.gpg
+              echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu jammy stable" > /etc/apt/sources.list.d/docker.list
+              apt-get update
+              apt-get install -y docker-ce docker-ce-cli containerd.io
+
+              mkdir -p /etc/traefik /letsencrypt
+              touch /letsencrypt/acme.json
+              chmod 600 /letsencrypt/acme.json
+
+              # Static config (TLS terminated at edge with Let's Encrypt)
+              cat > /etc/traefik/traefik.yml <<'TRAEFIK_STATIC'
+              entryPoints:
+                web:
+                  address: ":80"
+                  http:
+                    redirections:
+                      entryPoint:
+                        to: websecure
+                        scheme: https
+                websecure:
+                  address: ":443"
+              providers:
+                file:
+                  filename: /etc/traefik/dynamic.yml
+                  watch: true
+              certificatesResolvers:
+                letsencrypt:
+                  acme:
+                    email: "admin@orchestronic.dev"
+                    storage: /letsencrypt/acme.json
+                    httpChallenge:
+                      entryPoint: web
+              log:
+                level: INFO
+              TRAEFIK_STATIC
+
+              # Dynamic config: route per cluster by host pattern to that cluster's Traefik NodePort (30080)
+              cat > /etc/traefik/dynamic.yml <<'TRAEFIK_DYNAMIC'
+              http:
+                routers:
+%{{ for cluster in var.k3s_clusters ~}}
+                  r_${{cluster.id}}:
+                    rule: "HostRegexp(`{app:[a-z0-9-]+}.${{cluster.cluster_name}}.orchestronic.dev`)"
+                    entryPoints:
+                      - websecure
+                    tls:
+                      certResolver: letsencrypt
+                    service: s_${{cluster.id}}
+%{{ endfor ~}}
+                services:
+%{{ for cluster in var.k3s_clusters ~}}
+                  s_${{cluster.id}}:
+                    loadBalancer:
+                      passHostHeader: true
+                      servers:
+                        - url: "http://${{aws_instance.k3s_master[cluster.id].private_ip}}:30080"
+%{{ endfor ~}}
+              TRAEFIK_DYNAMIC
+
+              docker run -d --restart unless-stopped \
+                --name traefik-edge \
+                -p 80:80 -p 443:443 \
+                -v /etc/traefik:/etc/traefik:ro \
+                -v /letsencrypt:/letsencrypt \
+                traefik:v2.11
+              EOF
+  )
+
+  tags = {{
+    Name = "${{var.project_name}}-edge"
+  }}
+
+  depends_on = [aws_instance.k3s_master]
 }}
 
 # K3s Worker Nodes
