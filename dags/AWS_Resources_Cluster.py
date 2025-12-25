@@ -131,10 +131,10 @@ def write_terraform_files(terraform_dir, configInfo):
 
     load_dotenv(expanduser('/opt/airflow/dags/.env'))
 
-        project_name = f"{config_dict['repoName']}-{config_dict['resourceId'][:4]}"
+    project_name = f"{config_dict['repoName']}-{config_dict['resourceId'][:4]}"
 
-        # terraform.auto.tfvars
-        tfvars_content = f"""
+    # terraform.auto.tfvars
+    tfvars_content = f"""
 access_key       = "{os.getenv('AWS_ACCESS_KEY')}"
 secret_key       = "{os.getenv('AWS_SECRET_KEY')}"
 project_location = "{config_dict['region']}"
