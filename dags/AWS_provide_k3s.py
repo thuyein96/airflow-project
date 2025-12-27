@@ -5,12 +5,12 @@ import psycopg2
 from dotenv import load_dotenv
 from os.path import expanduser
 from pathlib import Path
-from datetime import datetime, timedelta
+from datetime import datetime
 
 from airflow import DAG
 from airflow.operators.python import PythonOperator
 from airflow.operators.bash import BashOperator
-
+from airflow.operators.trigger_dagrun import TriggerDagRunOperator
 
 # -------------------------
 # Default DAG args
@@ -44,7 +44,7 @@ def fetch_from_database(**context):
     )
     cursor = connection.cursor()
 
-    # Get resource info directly from Resources table
+    # Get resource info
     cursor.execute(
         'SELECT "name", "region", "resourceConfigId" FROM "Resources" WHERE id = %s;',
         (resource_id,)
@@ -115,22 +115,14 @@ k3s_clusters     = {json.dumps(k3s_clusters, indent=4)}
     with open(f"{terraform_dir}/terraform.auto.tfvars", "w") as f:
         f.write(tfvars_content)
     
-    # 1. READ PUBLIC KEY
+    # Read SSH public key
     try:
         with open('/opt/airflow/dags/.ssh/id_rsa.pub', 'r') as pub_key_file:
             ssh_public_key = pub_key_file.read().strip()
     except FileNotFoundError:
         raise ValueError("Public key not found at /opt/airflow/dags/.ssh/id_rsa.pub")
 
-    # 2. READ PRIVATE KEY (New Addition)
-    # We need the private key to inject into the worker node so it can SSH to the master
-    try:
-        with open('/opt/airflow/dags/.ssh/id_rsa', 'r') as priv_key_file:
-            ssh_private_key = priv_key_file.read().strip()
-    except FileNotFoundError:
-        raise ValueError("Private key not found at /opt/airflow/dags/.ssh/id_rsa")
-
-    # main.tf Template
+    # main.tf - Infrastructure Only (No K3s installation)
     main_tf_template = """
 terraform {{
   required_providers {{
@@ -145,13 +137,6 @@ provider "aws" {{
   region     = var.project_location
   access_key = var.access_key
   secret_key = var.secret_key
-}}
-
-# S3 Bucket (Optional now, but kept to prevent state conflict if removing)
-resource "aws_s3_bucket" "k3s_token" {{
-  bucket        = "k3s-config-${{var.project_name}}"
-  force_destroy = true
-  tags = {{ Name = "k3s-config-${{var.project_name}}" }}
 }}
 
 resource "aws_key_pair" "k3s_auth" {{
@@ -216,6 +201,7 @@ resource "aws_security_group" "k3s_sg" {{
 resource "aws_security_group" "edge_sg" {{
   name   = "${{var.project_name}}-edge-sg"
   vpc_id = data.aws_vpc.k3s_vpc.id
+  
   ingress {{
     from_port   = 22
     to_port     = 22
@@ -256,6 +242,8 @@ resource "aws_iam_role" "k3s_role" {{
   }})
 }}
 
+# SSM policy removed - using SSH for token distribution
+
 resource "aws_iam_instance_profile" "k3s_profile" {{
   name = "${{var.project_name}}-k3s-profile"
   role = aws_iam_role.k3s_role.name
@@ -279,7 +267,7 @@ data "aws_ami" "ubuntu" {{
   }}
 }}
 
-# K3s Master Node
+# K3s Master Nodes (VMs only - no K3s installation yet)
 resource "aws_instance" "k3s_master" {{
   for_each = {{ for cluster in var.k3s_clusters : cluster.id => cluster }}
   
@@ -293,33 +281,22 @@ resource "aws_instance" "k3s_master" {{
 
   user_data = base64encode(<<-EOF
               #!/bin/bash
-              set -e
+              set -ex
               apt-get update
               apt-get install -y curl wget git awscli
-              
-              PUBLIC_IP=$(curl -s http://169.254.169.254/latest/meta-data/public-ipv4)
-
-              # Install K3s server
-              curl -sfL https://get.k3s.io | sh -s - server --write-kubeconfig-mode 644 --tls-san "$PUBLIC_IP" --node-taint "node-role.kubernetes.io/control-plane=true:NoSchedule"
-              
-              sleep 15
-              mkdir -p /home/ubuntu/.kube
-              cp /etc/rancher/k3s/k3s.yaml /home/ubuntu/.kube/config
-              chown ubuntu:ubuntu /home/ubuntu/.kube/config
-              
-              # Traefik NodePort Patching
-              sleep 10
-              /usr/local/bin/kubectl --kubeconfig=/etc/rancher/k3s/k3s.yaml -n kube-system patch svc traefik --type merge -p '{"spec":{"type":"NodePort","ports":[{"name":"web","port":80,"protocol":"TCP","targetPort":8000,"nodePort":30080},{"name":"websecure","port":443,"protocol":"TCP","targetPort":8443,"nodePort":30443}]}}'
+              echo "Master VM ready for configuration"
               EOF
   )
   
   tags = {{
     Name = "${{each.value.cluster_name}}-master"
     ClusterName = each.value.cluster_name
+    Role = "k3s-master"
+    ProjectName = var.project_name
   }}
 }}
 
-# Edge Proxy
+# Edge Proxy (VM only - no Traefik yet)
 resource "aws_instance" "k3s_edge" {{
   ami                    = data.aws_ami.ubuntu.id
   instance_type          = "t3.micro"
@@ -331,79 +308,22 @@ resource "aws_instance" "k3s_edge" {{
 
   user_data = base64encode(<<-EOF
               #!/bin/bash
-              set -e
+              set -ex
               apt-get update
               apt-get install -y ca-certificates curl gnupg docker.io
-              
-              # (Shortened for brevity, keep your original Traefik config logic here)
-              mkdir -p /etc/traefik /letsencrypt
-              touch /letsencrypt/acme.json && chmod 600 /letsencrypt/acme.json
-
-              # Static config (TLS terminated at edge with Let's Encrypt)
-              cat > /etc/traefik/traefik.yml <<'TRAEFIK_STATIC'
-              entryPoints:
-                web:
-                  address: ":80"
-                  http:
-                    redirections:
-                      entryPoint:
-                        to: websecure
-                        scheme: https
-                websecure:
-                  address: ":443"
-              providers:
-                file:
-                  filename: /etc/traefik/dynamic.yml
-                  watch: true
-              certificatesResolvers:
-                letsencrypt:
-                  acme:
-                    email: "admin@orchestronic.dev"
-                    storage: /letsencrypt/acme.json
-                    httpChallenge:
-                      entryPoint: web
-              log:
-                level: INFO
-              TRAEFIK_STATIC
-
-              # Dynamic config: route per cluster by host pattern to that cluster's Traefik NodePort (30080)
-              cat > /etc/traefik/dynamic.yml <<'TRAEFIK_DYNAMIC'
-              http:
-                routers:
-%{{ for cluster in var.k3s_clusters ~}}
-                  r_${{cluster.id}}:
-                    rule: "HostRegexp(`{app:[a-z0-9-]+}.${{cluster.cluster_name}}.orchestronic.dev`)"
-                    entryPoints:
-                      - websecure
-                    tls:
-                      certResolver: letsencrypt
-                    service: s_${{cluster.id}}
-%{{ endfor ~}}
-                services:
-%{{ for cluster in var.k3s_clusters ~}}
-                  s_${{cluster.id}}:
-                    loadBalancer:
-                      passHostHeader: true
-                      servers:
-                        - url: "http://${{aws_instance.k3s_master[cluster.id].private_ip}}:30080"
-%{{ endfor ~}}
-              TRAEFIK_DYNAMIC
-
-              docker run -d --restart unless-stopped \
-                --name traefik-edge \
-                -p 80:80 -p 443:443 \
-                -v /etc/traefik:/etc/traefik:ro \
-                -v /letsencrypt:/letsencrypt \
-                traefik:v2.11
-              
+              echo "Edge VM ready for configuration"
               EOF
   )
 
-  tags = {{ Name = "${{var.project_name}}-edge" }}
+  tags = {{ 
+    Name = "${{var.project_name}}-edge"
+    Role = "edge-proxy"
+    ProjectName = var.project_name
+  }}
   depends_on = [aws_instance.k3s_master]
 }}
 
-# K3s Worker Nodes (FIXED USER DATA)
+# K3s Worker Nodes (VMs only - no K3s agent yet)
 resource "aws_instance" "k3s_worker" {{
   for_each = {{
     for item in flatten([
@@ -428,89 +348,32 @@ resource "aws_instance" "k3s_worker" {{
 
   user_data = base64encode(<<-EOF
               #!/bin/bash
-              set -ex  # Enable error logging
-              exec > >(tee /var/log/user-data.log) 2>&1
-              
-              echo "Starting worker node setup..."
+              set -ex
               apt-get update
-              apt-get install -y curl wget git awscli
-              
-              # Setup SSH directory
-              mkdir -p /home/ubuntu/.ssh
-              chmod 700 /home/ubuntu/.ssh
-              
-              # Write private key (using cat with explicit EOF marker)
-              cat > /home/ubuntu/.ssh/id_rsa << 'SSH_KEY_EOF'
-__SSH_PRIVATE_KEY__
-SSH_KEY_EOF
-              
-              chmod 600 /home/ubuntu/.ssh/id_rsa
-              chown -R ubuntu:ubuntu /home/ubuntu/.ssh
-              
-              # Verify key was written correctly
-              if [ ! -s /home/ubuntu/.ssh/id_rsa ]; then
-                echo "ERROR: Private key file is empty!" >&2
-                exit 1
-              fi
-              
-              # Get master IP
-              MASTER_IP="${{aws_instance.k3s_master[each.value.cluster_id].private_ip}}"
-              echo "Master IP: $MASTER_IP"
-              
-              # Wait for master to be ready (check SSH connectivity)
-              echo "Waiting for master SSH to be ready..."
-              for i in $(seq 1 60); do
-                if sudo -u ubuntu ssh -o StrictHostKeyChecking=no -o ConnectTimeout=5 -i /home/ubuntu/.ssh/id_rsa ubuntu@$MASTER_IP "echo 'SSH OK'" 2>/dev/null; then
-                  echo "Master SSH is ready"
-                  break
-                fi
-                echo "Attempt $i/60: Master SSH not ready yet..."
-                sleep 10
-              done
-              
-              # Fetch token via SSH
-              echo "Fetching K3s token from master..."
-              TOKEN=""
-              for i in $(seq 1 60); do
-                TOKEN=$(sudo -u ubuntu ssh -o StrictHostKeyChecking=no -o ConnectTimeout=10 -i /home/ubuntu/.ssh/id_rsa ubuntu@$MASTER_IP "sudo cat /var/lib/rancher/k3s/server/node-token" 2>/dev/null || true)
-                
-                if [ -n "$TOKEN" ]; then
-                  echo "Successfully retrieved token"
-                  break
-                fi
-                echo "Attempt $i/60: Token not available yet..."
-                sleep 10
-              done
-              
-              if [ -z "$TOKEN" ]; then
-                echo "ERROR: Failed to fetch K3s token from $MASTER_IP" >&2
-                exit 1
-              fi
-              
-              # Join cluster
-              echo "Joining K3s cluster..."
-              curl -sfL https://get.k3s.io | K3S_URL="https://$MASTER_IP:6443" K3S_TOKEN="$TOKEN" sh -s - agent
-              
-              # Clean up private key
-              rm -f /home/ubuntu/.ssh/id_rsa
-              
-              echo "Worker node setup complete!"
+              apt-get install -y curl wget git awscli jq
+              echo "Worker VM ready for configuration"
               EOF
   )
   
   tags = {{
     Name = "${{each.value.cluster_name}}-worker-${{each.value.index}}"
     ClusterName = each.value.cluster_name
+    ClusterId = each.value.cluster_id
+    Role = "k3s-worker"
+    ProjectName = var.project_name
   }}
 
   depends_on = [aws_instance.k3s_master]
 }}
 
+# Outputs for DAG 2
 output "k3s_masters" {{
   value = {{
     for cluster_id, master in aws_instance.k3s_master : cluster_id => {{
-      public_ip  = master.public_ip
-      private_ip = master.private_ip
+      instance_id = master.id
+      public_ip   = master.public_ip
+      private_ip  = master.private_ip
+      cluster_name = master.tags.ClusterName
     }}
   }}
 }}
@@ -518,27 +381,39 @@ output "k3s_masters" {{
 output "k3s_workers" {{
   value = {{
     for worker_id, worker in aws_instance.k3s_worker : worker_id => {{
-      public_ip  = worker.public_ip
-      private_ip = worker.private_ip
+      instance_id = worker.id
+      public_ip   = worker.public_ip
+      private_ip  = worker.private_ip
+      cluster_id  = worker.tags.ClusterId
     }}
   }}
 }}
+
+output "edge_proxy" {{
+  value = {{
+    instance_id = aws_instance.k3s_edge.id
+    public_ip   = aws_instance.k3s_edge.public_ip
+    private_ip  = aws_instance.k3s_edge.private_ip
+  }}
+}}
+
+output "project_name" {{
+  value = var.project_name
+}}
 """
 
-    # 3. DO STRING REPLACEMENTS
-    # Replace the placeholders with actual keys
+    # Replace placeholders
     main_tf_content = (
         main_tf_template
         .replace("{{", "{")
         .replace("}}", "}")
         .replace("__SSH_PUBLIC_KEY__", ssh_public_key)
-        .replace("__SSH_PRIVATE_KEY__", ssh_private_key)
     )
 
     with open(f"{terraform_dir}/main.tf", "w") as f:
         f.write(main_tf_content)
 
-    # variables.tf (Unchanged)
+    # variables.tf
     variables_tf = f"""
 variable "access_key" {{
   description = "AWS Access Key"
@@ -571,146 +446,80 @@ variable "k3s_clusters" {{
     with open(f"{terraform_dir}/variables.tf", "w") as f:
         f.write(variables_tf)
 
-def write_to_db(terraform_dir, configInfo, **context):
+def write_instance_info_to_db(terraform_dir, configInfo, **context):
+    """Store instance IPs and IDs in database for DAG 2"""
     if isinstance(configInfo, str):
         configInfo = ast.literal_eval(configInfo)
 
-    k3s_output_file = Path(terraform_dir) / "terraform.tfstate"
-    if not k3s_output_file.exists():
-        raise FileNotFoundError(f"Terraform state file not found at {k3s_output_file}")
+    state_file = Path(terraform_dir) / "terraform.tfstate"
+    if not state_file.exists():
+        raise FileNotFoundError(f"Terraform state file not found at {state_file}")
 
     load_dotenv(expanduser('/opt/airflow/dags/.env'))
 
-    USER = os.getenv("DB_USER")
-    PASSWORD = os.getenv("DB_PASSWORD")
-    HOST = os.getenv("DB_HOST")
-    PORT = os.getenv("DB_PORT")
-    DBNAME = os.getenv("DB_NAME")
-
     connection = psycopg2.connect(
-        user=USER, password=PASSWORD,
-        host=HOST, port=PORT, dbname=DBNAME
+        user=os.getenv("DB_USER"),
+        password=os.getenv("DB_PASSWORD"),
+        host=os.getenv("DB_HOST"),
+        port=os.getenv("DB_PORT"),
+        dbname=os.getenv("DB_NAME")
     )
     cursor = connection.cursor()
 
-    with open(k3s_output_file, 'r') as f:
-        k3s_state = json.load(f)
+    with open(state_file, 'r') as f:
+        state = json.load(f)
 
-    # Extract master and worker IPs for each cluster from Terraform state
+    # Store infrastructure state for each cluster
     for cluster in configInfo['k3s_clusters']:
         cluster_id = cluster['id']
-        cluster_name = cluster['cluster_name']
-
-        master_public_ip = None
-        master_private_ip = None
-        # worker_ips = []
-
-        for resource in k3s_state.get('resources', []):
+        
+        # Extract master info
+        master_info = None
+        for resource in state.get('resources', []):
             if resource.get('type') == 'aws_instance' and resource.get('name') == 'k3s_master':
                 for instance in resource.get('instances', []):
-                    attributes = instance.get('attributes', {})
-                    index_key = instance.get('index_key')
-
-                    if index_key == cluster_id:
-                        master_public_ip = attributes.get('public_ip', '')
-                        master_private_ip = attributes.get('private_ip', '')
+                    if instance.get('index_key') == cluster_id:
+                        attrs = instance.get('attributes', {})
+                        master_info = {
+                            'instance_id': attrs.get('id'),
+                            'public_ip': attrs.get('public_ip'),
+                            'private_ip': attrs.get('private_ip')
+                        }
                         break
-
-        if not master_public_ip:
-            print(f"Warning: No master found in Terraform state for cluster {cluster_id}")
+        
+        if not master_info:
+            print(f"Warning: No master found for cluster {cluster_id}")
             continue
 
-        # Fetch kubeconfig from master via SSH
-        import subprocess
-        import time
-        import tempfile
-        kubeconfig = None
-        
-        # Create a temporary private key file with correct permissions (600)
-        # This is necessary because the mounted key file might have different ownership/permissions
-        # that cause SSH to fail or Airflow to be unable to read it.
-        tmp_key_path = None
-        try:
-            with tempfile.NamedTemporaryFile(mode='w', delete=False) as tmp_key:
-                with open('/opt/airflow/dags/.ssh/id_rsa', 'r') as key_file:
-                    tmp_key.write(key_file.read())
-                tmp_key_path = tmp_key.name
-            
-            os.chmod(tmp_key_path, 0o600)
-
-            # Retry loop to wait for K3s installation to complete (up to 5 minutes)
-            max_retries = 10
-            for attempt in range(max_retries):
-                try:
-                    print(f"Attempt {attempt+1}/{max_retries} to fetch kubeconfig from {master_public_ip}...")
-                    
-                    result = subprocess.run(
-                        [
-                            'ssh',
-                            '-o', 'StrictHostKeyChecking=no',
-                            '-o', 'UserKnownHostsFile=/dev/null',
-                            '-o', 'ConnectTimeout=10', # Fast fail on connection
-                            '-i', tmp_key_path,
-                            f'ubuntu@{master_public_ip}',
-                            # Check if file exists and cat it, otherwise fail
-                            'if [ -f /home/ubuntu/.kube/config ]; then cat /home/ubuntu/.kube/config; else exit 1; fi'
-                        ],
-                        capture_output=True,
-                        text=True,
-                        timeout=10
-                    )
-                    
-                    if result.returncode == 0 and result.stdout.strip():
-                        kubeconfig = result.stdout
-                        # Replace localhost/127.0.0.1 with public IP
-                        kubeconfig = kubeconfig.replace('127.0.0.1', master_public_ip)
-                        kubeconfig = kubeconfig.replace('localhost', master_public_ip)
-
-                        # Modify kubeconfig to skip TLS verification (solves self-signed cert errors)
-                        # import re
-                        # kubeconfig = re.sub(r'certificate-authority-data:.*', 'insecure-skip-tls-verify: true', kubeconfig)
-
-                        print(f"✓ Retrieved kubeconfig for cluster {cluster_id}")
-                        break
-                    else:
-                        print(f"  Kubeconfig not ready yet. stderr: {result.stderr.strip() if result.stderr else 'None'}")
-                except subprocess.TimeoutExpired:
-                    print(f"  SSH connection timed out.")
-                except Exception as e:
-                    print(f"  Error fetching kubeconfig: {str(e)}")
-                
-                if attempt < max_retries - 1:
-                    print("  Waiting 30 seconds before next attempt...")
-                    time.sleep(30)
-        finally:
-            if tmp_key_path and os.path.exists(tmp_key_path):
-                os.unlink(tmp_key_path)
-
-        # Store cluster endpoint and terraform state
-        update_query = 'UPDATE "AwsK8sCluster" SET "clusterEndpoint" = %s, "terraformState" = %s'
-        params = [json.dumps(master_public_ip), json.dumps(k3s_state)]
-        
-        # Add kubeconfig if available
-        if kubeconfig:
-            update_query += ', "kubeConfig" = %s'
-            params.append(kubeconfig)
-        
-        update_query += ' WHERE "id" = %s;'
-        params.append(cluster_id)
-        
-        cursor.execute(update_query, tuple(params))
+        # Store in database with status 'provisioned'
+        cursor.execute(
+            '''UPDATE "AwsK8sCluster" 
+               SET "clusterEndpoint" = %s, 
+                   "terraformState" = %s,
+                   "provisionStatus" = %s
+               WHERE "id" = %s;''',
+            (
+                json.dumps(master_info),
+                json.dumps(state),
+                'provisioned',  # New status field
+                cluster_id
+            )
+        )
         connection.commit()
-        print(f"✓ Updated cluster {cluster_id} in database")
+        print(f"✓ Stored infrastructure info for cluster {cluster_id}")
 
-    connection.commit()
     cursor.close()
     connection.close()
+
+    # Return resource_id for triggering DAG 2
+    return configInfo['resourcesId']
 
 with DAG(
     'AWS_terraform_k3s_provision',
     default_args=default_args,
     schedule_interval=None,
     catchup=False,
+    description='Provision K3s infrastructure (VMs only)',
 ) as dag:
 
     fetch_task = PythonOperator(
@@ -743,31 +552,21 @@ with DAG(
         bash_command="cd {{ ti.xcom_pull(task_ids='create_terraform_dir') }} && terraform apply -auto-approve",
     )
 
-    write_to_db_task = PythonOperator(
-        task_id="write_to_db",
-        python_callable=write_to_db,
+    write_db_task = PythonOperator(
+        task_id="write_instance_info_to_db",
+        python_callable=write_instance_info_to_db,
         op_args=[
             "{{ ti.xcom_pull(task_ids='create_terraform_dir') }}",
             "{{ ti.xcom_pull(task_ids='fetch_config') }}",
         ],
     )
 
-    terraform_cleanup = BashOperator(
-        task_id="terraform_cleanup",
-        bash_command=(
-            "cd {{ ti.xcom_pull(task_ids='create_terraform_dir') }} && "
-            # Unlock if locked
-            "if [ -f .terraform.tfstate.lock.info ]; then "
-            "  LOCK_ID=$(cat .terraform.tfstate.lock.info | grep -oP '(?<=\"ID\":\")[^\"]*') && "
-            "  terraform force-unlock -force $LOCK_ID || true; "
-            "fi && "
-            # DANGEROUS: Only do this if you are 100% sure 'write_to_db' succeeded
-            # Remove the hidden .terraform folder which contains the heavy binaries
-            "rm -rf .terraform && "
-            # Optionally remove the whole directory if you don't need debugging logs
-            # "cd .. && rm -rf k3s" 
-            "echo 'Cleanup complete'"
-        ),
+    # Trigger configuration DAG
+    trigger_config = TriggerDagRunOperator(
+        task_id="trigger_k3s_configuration",
+        trigger_dag_id="AWS_configure_k3s",
+        conf={"resource_id": "{{ ti.xcom_pull(task_ids='write_instance_info_to_db') }}"},
+        wait_for_completion=False,
     )
 
-    fetch_task >> create_dir_task >> write_files_task >> terraform_init >> terraform_apply >> write_to_db_task >> terraform_cleanup
+    fetch_task >> create_dir_task >> write_files_task >> terraform_init >> terraform_apply >> write_db_task >> trigger_config
