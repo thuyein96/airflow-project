@@ -495,7 +495,7 @@ def write_instance_info_to_db(terraform_dir, configInfo, **context):
         cursor.execute(
             '''UPDATE "AwsK8sCluster" 
                SET "clusterEndpoint" = %s, 
-                   "terraformState" = %s,
+                   "terraformState" = %s
                WHERE "id" = %s;''',
             (
                 json.dumps(master_info),
