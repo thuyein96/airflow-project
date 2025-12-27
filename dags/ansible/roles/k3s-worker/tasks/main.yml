@@ -1,9 +1,26 @@
+---
+# 1. Wait for any background system updates to finish
+- name: Wait for automatic system updates to complete
+  raw: >
+    while fuser /var/lib/dpkg/lock >/dev/null 2>&1 || 
+          fuser /var/lib/apt/lists/lock >/dev/null 2>&1 || 
+          fuser /var/lib/dpkg/lock-frontend >/dev/null 2>&1; do 
+      echo 'Waiting for apt lock...'; 
+      sleep 5; 
+    done
+  changed_when: false
+
+# 2. Now it is safe to install packages
 - name: Install required packages
   apt:
     name:
       - curl
       - ca-certificates
     update_cache: yes
+  register: apt_result
+  retries: 3
+  delay: 10
+  until: apt_result is success
 
 - name: Read token from master
   slurp:
