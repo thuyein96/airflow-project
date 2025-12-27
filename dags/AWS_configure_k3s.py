@@ -32,7 +32,7 @@ def fetch_cluster_info(**context):
     if not resource_id:
         raise ValueError("resource_id missing")
 
-    load_dotenv(expanduser("/home/azureuser/airflow/dags/.env"))
+    load_dotenv(expanduser("/opt/airflow/dags/.env"))
 
     conn = psycopg2.connect(
         user=os.getenv("DB_USER"),
