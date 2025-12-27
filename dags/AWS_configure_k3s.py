@@ -21,7 +21,7 @@ default_args = {
     "retry_delay": timedelta(minutes=3),
 }
 
-ANSIBLE_BASE = "/opt/airflow/dags/ansible"
+ANSIBLE_BASE = "/home/azureuser/airflow/dags/ansible"
 INVENTORY_PATH = f"{ANSIBLE_BASE}/inventory/hosts.ini"
 
 # --------------------------------------------------
@@ -32,7 +32,7 @@ def fetch_cluster_info(**context):
     if not resource_id:
         raise ValueError("resource_id missing")
 
-    load_dotenv(expanduser("/opt/airflow/dags/.env"))
+    load_dotenv(expanduser("/home/azureuser/airflow/dags/.env"))
 
     conn = psycopg2.connect(
         user=os.getenv("DB_USER"),
@@ -116,7 +116,7 @@ def generate_inventory(**context):
     try:
         os.makedirs(inventory_dir, mode=0o755, exist_ok=True)
     except PermissionError:
-        # If we can't create in /opt/airflow/dags/ansible, try a temp location
+        # If we can't create in /home/azureuser/airflow/dags/ansible, try a temp location
         temp_base = "/tmp/ansible"
         inventory_dir = f"{temp_base}/inventory"
         os.makedirs(inventory_dir, mode=0o755, exist_ok=True)
@@ -159,14 +159,14 @@ def fetch_kubeconfig(**context):
     clusters = context["ti"].xcom_pull(task_ids="fetch_cluster_info")
     master_ip = clusters[0]["master"]["public_ip"]
 
-    load_dotenv(expanduser("/opt/airflow/dags/.env"))
+    load_dotenv(expanduser("/home/azureuser/airflow/dags/.env"))
 
-    kubeconfig_path = "/opt/airflow/dags/tmp_kubeconfig"
+    kubeconfig_path = "/home/azureuser/airflow/dags/tmp_kubeconfig"
 
     # Ensure the command succeeds
     result = os.system(
         f"ssh -o StrictHostKeyChecking=no "
-        f"-i /opt/airflow/dags/.ssh/id_rsa "
+        f"-i /home/azureuser/airflow/dags/.ssh/id_rsa "
         f"ubuntu@{master_ip} "
         f"'cat /home/ubuntu/.kube/config' > {kubeconfig_path}"
     )
