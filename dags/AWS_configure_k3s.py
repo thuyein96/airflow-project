@@ -123,12 +123,11 @@ def fetch_cluster_info(**context):
 def generate_inventory(**context):
     clusters = context["ti"].xcom_pull(task_ids="fetch_cluster_info")
 
-    # Create directory using os.makedirs with proper error handling
+    # Ensure the directory exists
     inventory_dir = os.path.dirname(INVENTORY_PATH)
     try:
         os.makedirs(inventory_dir, mode=0o755, exist_ok=True)
     except PermissionError:
-        # If we can't create in /home/azureuser/airflow/dags/ansible, try a temp location
         temp_base = "/tmp/ansible"
         inventory_dir = f"{temp_base}/inventory"
         os.makedirs(inventory_dir, mode=0o755, exist_ok=True)
@@ -137,25 +136,28 @@ def generate_inventory(**context):
     else:
         inventory_path = INVENTORY_PATH
 
+    # --- FIX START: Add the key path to the inventory lines ---
     lines = ["[k3s_master]"]
     master = clusters[0]["master"]
 
+    # We add ansible_ssh_private_key_file to every host line
     lines.append(
-        f"master ansible_host={master['public_ip']} ansible_user=ubuntu"
+        f"master ansible_host={master['public_ip']} ansible_user=ubuntu ansible_ssh_private_key_file={SSH_KEY_PATH}"
     )
 
     lines.append("\n[k3s_workers]")
     for idx, w in enumerate(clusters[0]["workers"]):
         lines.append(
-            f"worker{idx+1} ansible_host={w['public_ip']} ansible_user=ubuntu"
+            f"worker{idx+1} ansible_host={w['public_ip']} ansible_user=ubuntu ansible_ssh_private_key_file={SSH_KEY_PATH}"
         )
 
     lines.append("\n[edge]")
     edge = clusters[0]["edge"]
     if edge:
         lines.append(
-            f"edge ansible_host={edge['public_ip']} ansible_user=ubuntu"
+            f"edge ansible_host={edge['public_ip']} ansible_user=ubuntu ansible_ssh_private_key_file={SSH_KEY_PATH}"
         )
+    # --- FIX END ---
 
     with open(inventory_path, "w") as f:
         f.write("\n".join(lines))
