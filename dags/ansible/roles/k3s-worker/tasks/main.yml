@@ -28,6 +28,19 @@
   delegate_to: master
   register: k3s_token
 
+# TODO: remove later if not needed
+- name: Test connectivity to master
+  wait_for:
+    host: "{{ hostvars['master']['ansible_host'] }}"
+    port: 6443
+    timeout: 10
+  ignore_errors: yes
+# TODO: remove later if not needed
+- name: Check if k3s-agent already exists
+  stat:
+    path: /usr/local/bin/k3s-agent
+  register: k3s_agent_stat
+
 - name: Join K3s cluster
   shell: |
     curl -sfL https://get.k3s.io | \
