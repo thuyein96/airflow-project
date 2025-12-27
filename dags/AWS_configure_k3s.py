@@ -29,6 +29,9 @@ DAG_FOLDER = os.path.dirname(os.path.abspath(__file__))
 
 # Update paths to be relative to the DAG folder
 ANSIBLE_BASE = os.path.join(DAG_FOLDER, "ansible")
+# --- FIX: Define roles_path here ---
+roles_path = os.path.join(ANSIBLE_BASE, "roles") 
+# -----------------------------------
 INVENTORY_PATH = os.path.join(ANSIBLE_BASE, "inventory/hosts.ini")
 SSH_KEY_PATH = os.path.join(DAG_FOLDER, ".ssh/id_rsa")
 ENV_PATH = os.path.join(DAG_FOLDER, ".env")
