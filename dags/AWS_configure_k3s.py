@@ -228,8 +228,9 @@ def fetch_cluster_info(**context):
 
 def setup_ssh_keys_on_nodes(cluster_info, **context):
     """Setup SSH keys on all nodes so they can communicate"""
-    if isinstance(cluster_info, str):
-        cluster_info = json.loads(cluster_info)
+    # cluster_info is already a dict from XCom, no need to parse
+    if not isinstance(cluster_info, dict):
+        raise ValueError(f"Expected dict, got {type(cluster_info)}")
     
     ssh_key_path = create_temp_ssh_key()
     
@@ -306,8 +307,9 @@ echo "SSH keys configured successfully"
 
 def configure_master_nodes(cluster_info, **context):
     """Install K3s on master nodes"""
-    if isinstance(cluster_info, str):
-        cluster_info = json.loads(cluster_info)
+    # cluster_info is already a dict from XCom
+    if not isinstance(cluster_info, dict):
+        raise ValueError(f"Expected dict, got {type(cluster_info)}")
     
     ssh_key_path = create_temp_ssh_key()
     results = []
@@ -401,8 +403,9 @@ echo "Master configuration complete at $(date)"
 
 def configure_worker_nodes(cluster_info, **context):
     """Install K3s agent on worker nodes using SSH to fetch token"""
-    if isinstance(cluster_info, str):
-        cluster_info = json.loads(cluster_info)
+    # cluster_info is already a dict from XCom
+    if not isinstance(cluster_info, dict):
+        raise ValueError(f"Expected dict, got {type(cluster_info)}")
     
     ssh_key_path = create_temp_ssh_key()
     results = []
@@ -568,8 +571,9 @@ echo "Worker configuration complete at $(date)"
 
 def configure_edge_proxy(cluster_info, **context):
     """Configure Traefik edge proxy"""
-    if isinstance(cluster_info, str):
-        cluster_info = json.loads(cluster_info)
+    # cluster_info is already a dict from XCom
+    if not isinstance(cluster_info, dict):
+        raise ValueError(f"Expected dict, got {type(cluster_info)}")
     
     ssh_key_path = create_temp_ssh_key()
     
@@ -703,8 +707,9 @@ echo "Edge proxy configuration complete at $(date)"
 
 def fetch_kubeconfigs(cluster_info, **context):
     """Fetch kubeconfig from each master and store in database"""
-    if isinstance(cluster_info, str):
-        cluster_info = json.loads(cluster_info)
+    # cluster_info is already a dict from XCom
+    if not isinstance(cluster_info, dict):
+        raise ValueError(f"Expected dict, got {type(cluster_info)}")
     
     load_dotenv(expanduser('/opt/airflow/dags/.env'))
     ssh_key_path = create_temp_ssh_key()
