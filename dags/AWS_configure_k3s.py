@@ -443,14 +443,8 @@ echo "Master public IP: $MASTER_PUBLIC_IP"
 # Function to fetch token via SSH
 fetch_token_via_ssh() {{
     local master_ip=$1
-    echo "Attempting to fetch token from $master_ip..."
-    
-    TOKEN=$(ssh -o ConnectTimeout=10 \\
-                -o StrictHostKeyChecking=no \\
-                -o UserKnownHostsFile=/dev/null \\
-                -i /home/ubuntu/.ssh/id_rsa \\
-                ubuntu@$master_ip \\
-                "sudo cat /var/lib/rancher/k3s/server/node-token" 2>/dev/null || true)
+
+    TOKEN=$(ssh -i /home/ubuntu/.ssh/id_rsa ubuntu@$master_ip "sudo cat /var/lib/rancher/k3s/server/node-token")
     
     echo "$TOKEN"
 }}
