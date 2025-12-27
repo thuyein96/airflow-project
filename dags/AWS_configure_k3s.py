@@ -1,812 +1,189 @@
 import os
 import json
 import psycopg2
-import subprocess
-import time
-import tempfile
+from pathlib import Path
+from datetime import datetime, timedelta
 from dotenv import load_dotenv
 from os.path import expanduser
-from datetime import datetime, timedelta
 
 from airflow import DAG
 from airflow.operators.python import PythonOperator
+from airflow.operators.bash import BashOperator
 
-# -------------------------
+# --------------------------------------------------
 # Default DAG args
-# -------------------------
+# --------------------------------------------------
 default_args = {
-    'owner': 'admin',
-    'depends_on_past': False,
-    'start_date': datetime(2025, 1, 1),
-    'retries': 2,
-    'retry_delay': timedelta(minutes=5),
+    "owner": "admin",
+    "depends_on_past": False,
+    "start_date": datetime(2025, 1, 1),
+    "retries": 1,
+    "retry_delay": timedelta(minutes=3),
 }
 
-# -------------------------
-# SSH Helper Functions
-# -------------------------
+ANSIBLE_BASE = "/opt/airflow/dags/ansible"
+INVENTORY_PATH = f"{ANSIBLE_BASE}/inventory/hosts.ini"
 
-def create_temp_ssh_key():
-    """Create a temporary SSH key file with proper permissions"""
-    with tempfile.NamedTemporaryFile(mode='w', delete=False, suffix='_ssh_key') as tmp_key:
-        with open('/opt/airflow/dags/.ssh/id_rsa', 'r') as key_file:
-            tmp_key.write(key_file.read())
-        tmp_key_path = tmp_key.name
-    
-    os.chmod(tmp_key_path, 0o600)
-    return tmp_key_path
-
-def cleanup_temp_key(key_path):
-    """Safely remove temporary SSH key"""
-    try:
-        if key_path and os.path.exists(key_path):
-            os.unlink(key_path)
-    except Exception as e:
-        print(f"Warning: Could not cleanup temp key: {e}")
-
-def wait_for_ssh(host, ssh_key_path, timeout=300, interval=5):
-    """Wait for SSH to be available on a host"""
-    print(f"Waiting for SSH on {host}...")
-    start_time = time.time()
-    
-    while time.time() - start_time < timeout:
-        try:
-            result = subprocess.run([
-                'ssh',
-                '-o', 'StrictHostKeyChecking=no',
-                '-o', 'UserKnownHostsFile=/dev/null',
-                '-o', 'ConnectTimeout=5',
-                '-o', 'BatchMode=yes',
-                '-i', ssh_key_path,
-                f'ubuntu@{host}',
-                'echo "SSH_OK"'
-            ], capture_output=True, timeout=10, text=True)
-            
-            if result.returncode == 0 and 'SSH_OK' in result.stdout:
-                print(f"✓ SSH available on {host}")
-                return True
-        except subprocess.TimeoutExpired:
-            pass
-        except Exception as e:
-            print(f"SSH check error: {e}")
-        
-        time.sleep(interval)
-    
-    raise TimeoutError(f"SSH not available on {host} after {timeout}s")
-
-def execute_remote_command(host, ssh_key_path, command, timeout=300):
-    """Execute a command on remote host via SSH"""
-    result = subprocess.run([
-        'ssh',
-        '-o', 'StrictHostKeyChecking=no',
-        '-o', 'UserKnownHostsFile=/dev/null',
-        '-o', 'ServerAliveInterval=60',
-        '-o', 'ServerAliveCountMax=3',
-        '-i', ssh_key_path,
-        f'ubuntu@{host}',
-        command
-    ], capture_output=True, timeout=timeout, text=True)
-    
-    return result
-
-def execute_remote_script(host, ssh_key_path, script_content, timeout=600):
-    """Upload and execute a script on remote host"""
-    # Create remote script
-    script_name = f"/tmp/script_{int(time.time())}.sh"
-    
-    # Upload script
-    result = subprocess.run([
-        'ssh',
-        '-o', 'StrictHostKeyChecking=no',
-        '-o', 'UserKnownHostsFile=/dev/null',
-        '-i', ssh_key_path,
-        f'ubuntu@{host}',
-        f'cat > {script_name} && chmod +x {script_name}'
-    ], input=script_content.encode(), capture_output=True, timeout=30)
-    
-    if result.returncode != 0:
-        raise Exception(f"Failed to upload script: {result.stderr.decode()}")
-    
-    # Execute script
-    result = subprocess.run([
-        'ssh',
-        '-o', 'StrictHostKeyChecking=no',
-        '-o', 'UserKnownHostsFile=/dev/null',
-        '-o', 'ServerAliveInterval=60',
-        '-i', ssh_key_path,
-        f'ubuntu@{host}',
-        f'sudo {script_name}'
-    ], capture_output=True, timeout=timeout, text=True)
-    
-    return result
-
-# -------------------------
-# DAG Tasks
-# -------------------------
-
+# --------------------------------------------------
+# Step 1: Fetch cluster info from DB
+# --------------------------------------------------
 def fetch_cluster_info(**context):
-    """Fetch provisioned cluster information from database"""
-    resource_id = context['dag_run'].conf.get('resource_id')
+    resource_id = context["dag_run"].conf.get("resource_id")
     if not resource_id:
-        raise ValueError("No resource_id received. Stop DAG run.")
+        raise ValueError("resource_id missing")
 
-    load_dotenv(expanduser('/opt/airflow/dags/.env'))
+    load_dotenv(expanduser("/opt/airflow/dags/.env"))
 
-    connection = psycopg2.connect(
+    conn = psycopg2.connect(
         user=os.getenv("DB_USER"),
         password=os.getenv("DB_PASSWORD"),
         host=os.getenv("DB_HOST"),
         port=os.getenv("DB_PORT"),
-        dbname=os.getenv("DB_NAME")
+        dbname=os.getenv("DB_NAME"),
     )
-    cursor = connection.cursor()
+    cur = conn.cursor()
 
-    # Get resource and cluster info
-    cursor.execute(
-        'SELECT "name", "region", "resourceConfigId" FROM "Resources" WHERE id = %s;',
-        (resource_id,)
+    cur.execute(
+        'SELECT "resourceConfigId" FROM "Resources" WHERE id = %s;',
+        (resource_id,),
     )
-    resource = cursor.fetchone()
-    if not resource:
-        raise ValueError(f"No resource found for resource_id={resource_id}")
-    repoName, region, resourceConfigId = resource
+    res = cur.fetchone()
+    if not res:
+        raise ValueError("Resource not found")
 
-    # Get clusters with provisioned status
-    cursor.execute(
-        '''SELECT "id", "clusterName", "nodeCount", "clusterEndpoint", "terraformState" 
-           FROM "AwsK8sCluster" 
-           WHERE "resourceConfigId" = %s;''',
-        (resourceConfigId,)
+    resource_config_id = res[0]
+
+    cur.execute(
+        '''
+        SELECT "id", "clusterName", "clusterEndpoint", "terraformState"
+        FROM "AwsK8sCluster"
+        WHERE "resourceConfigId" = %s;
+        ''',
+        (resource_config_id,),
     )
-    clusters = cursor.fetchall()
-    
+    clusters = cur.fetchall()
+
+    cur.close()
+    conn.close()
+
     if not clusters:
-        raise ValueError(f"No provisioned clusters found for resourceConfigId={resourceConfigId}")
+        raise ValueError("No clusters found")
 
-    cluster_info_list = []
-    for cluster in clusters:
-        cluster_id, clusterName, nodeCount, clusterEndpoint, terraformState = cluster
-        
-        # Handle both string and dict types (psycopg2 auto-parses JSONB)
-        if isinstance(clusterEndpoint, str):
-            master_info = json.loads(clusterEndpoint) if clusterEndpoint else {}
-        else:
-            master_info = clusterEndpoint if clusterEndpoint else {}
-        
-        if isinstance(terraformState, str):
-            state = json.loads(terraformState) if terraformState else {}
-        else:
-            state = terraformState if terraformState else {}
-        
-        # Extract worker IPs from terraform state
-        worker_ips = []
-        for resource in state.get('resources', []):
-            if resource.get('type') == 'aws_instance' and resource.get('name') == 'k3s_worker':
-                for instance in resource.get('instances', []):
-                    attrs = instance.get('attributes', {})
-                    tags = attrs.get('tags', {})
-                    if tags.get('ClusterId') == cluster_id:
-                        worker_ips.append({
-                            'public_ip': attrs.get('public_ip'),
-                            'private_ip': attrs.get('private_ip'),
-                            'instance_id': attrs.get('id')
-                        })
-        
-        # Extract edge proxy info
-        edge_info = None
-        for resource in state.get('resources', []):
-            if resource.get('type') == 'aws_instance' and resource.get('name') == 'k3s_edge':
-                for instance in resource.get('instances', []):
-                    attrs = instance.get('attributes', {})
-                    edge_info = {
-                        'public_ip': attrs.get('public_ip'),
-                        'private_ip': attrs.get('private_ip'),
-                        'instance_id': attrs.get('id')
-                    }
-                    break
-        
-        cluster_info_list.append({
-            'id': cluster_id,
-            'name': clusterName,
-            'node_count': nodeCount,
-            'master': master_info,
-            'workers': worker_ips,
-            'edge': edge_info
+    cluster_data = []
+
+    for cid, name, endpoint, tf_state in clusters:
+        endpoint = json.loads(endpoint) if endpoint else {}
+        tf_state = json.loads(tf_state) if tf_state else {}
+
+        workers = []
+        edge = None
+
+        for r in tf_state.get("resources", []):
+            if r.get("type") == "aws_instance":
+                if r.get("name") == "k3s_worker":
+                    for i in r.get("instances", []):
+                        workers.append(i["attributes"])
+                if r.get("name") == "k3s_edge":
+                    edge = r["instances"][0]["attributes"]
+
+        cluster_data.append({
+            "cluster_id": cid,
+            "cluster_name": name,
+            "master": endpoint,
+            "workers": workers,
+            "edge": edge,
         })
 
-    cursor.close()
-    connection.close()
+    return cluster_data
 
-    project_name = f"{repoName}-{resource_id[:4]}"
-    
-    return {
-        'resource_id': resource_id,
-        'region': region,
-        'project_name': project_name,
-        'clusters': cluster_info_list
-    }
 
-def setup_ssh_keys_on_nodes(**context):
-    """Setup SSH keys on all nodes so they can communicate"""
-    cluster_info = context['ti'].xcom_pull(task_ids='fetch_cluster_info')
-    
-    if not isinstance(cluster_info, dict):
-        raise ValueError(f"Expected dict, got {type(cluster_info)}")
-    
-    ssh_key_path = create_temp_ssh_key()
-    
-    try:
-        # Read both public and private keys
-        with open('/opt/airflow/dags/.ssh/id_rsa.pub', 'r') as f:
-            public_key = f.read().strip()
-        
-        with open('/opt/airflow/dags/.ssh/id_rsa', 'r') as f:
-            private_key = f.read()
-        
-        all_nodes = []
-        
-        # Collect all node IPs
-        for cluster in cluster_info['clusters']:
-            all_nodes.append(('master', cluster['master']['public_ip']))
-            for idx, worker in enumerate(cluster['workers']):
-                all_nodes.append((f'worker-{idx}', worker['public_ip']))
-        
-        # Setup SSH keys on each node
-        for node_type, node_ip in all_nodes:
-            print(f"Setting up SSH keys on {node_type} ({node_ip})...")
-            
-            # Wait for SSH to be available
-            wait_for_ssh(node_ip, ssh_key_path, timeout=180)
-            
-            # Setup script
-            setup_script = f"""#!/bin/bash
-set -e
+# --------------------------------------------------
+# Step 2: Generate Ansible inventory
+# --------------------------------------------------
+def generate_inventory(**context):
+    clusters = context["ti"].xcom_pull(task_ids="fetch_cluster_info")
 
-# Ensure SSH directory exists with correct permissions
-mkdir -p /home/ubuntu/.ssh
-chmod 700 /home/ubuntu/.ssh
+    Path(os.path.dirname(INVENTORY_PATH)).mkdir(parents=True, exist_ok=True)
 
-# Add public key to authorized_keys (if not already there)
-if ! grep -q "{public_key}" /home/ubuntu/.ssh/authorized_keys 2>/dev/null; then
-    echo "{public_key}" >> /home/ubuntu/.ssh/authorized_keys
-fi
-chmod 600 /home/ubuntu/.ssh/authorized_keys
+    lines = ["[k3s_master]"]
+    master = clusters[0]["master"]
 
-# Install private key for inter-node communication
-cat > /home/ubuntu/.ssh/id_rsa << 'PRIVATE_KEY_EOF'
-{private_key}PRIVATE_KEY_EOF
+    lines.append(
+        f"master ansible_host={master['public_ip']} ansible_user=ubuntu"
+    )
 
-chmod 600 /home/ubuntu/.ssh/id_rsa
+    lines.append("\n[k3s_workers]")
+    for idx, w in enumerate(clusters[0]["workers"]):
+        lines.append(
+            f"worker{idx+1} ansible_host={w['public_ip']} ansible_user=ubuntu"
+        )
 
-# Create SSH config to skip host checking for internal network
-cat > /home/ubuntu/.ssh/config << 'SSH_CONFIG_EOF'
-Host 10.*
-    StrictHostKeyChecking no
-    UserKnownHostsFile /dev/null
-    ConnectTimeout 10
-    ServerAliveInterval 60
-    ServerAliveCountMax 3
-SSH_CONFIG_EOF
+    lines.append("\n[edge]")
+    edge = clusters[0]["edge"]
+    if edge:
+        lines.append(
+            f"edge ansible_host={edge['public_ip']} ansible_user=ubuntu"
+        )
 
-chmod 600 /home/ubuntu/.ssh/config
-chown -R ubuntu:ubuntu /home/ubuntu/.ssh
+    with open(INVENTORY_PATH, "w") as f:
+        f.write("\n".join(lines))
 
-echo "SSH keys configured successfully"
-"""
-            
-            result = execute_remote_script(node_ip, ssh_key_path, setup_script, timeout=60)
-            
-            if result.returncode != 0:
-                print(f"Warning: SSH setup on {node_type} had issues: {result.stderr}")
-            else:
-                print(f"✓ SSH keys configured on {node_type}")
-        
-        return {"status": "success", "nodes_configured": len(all_nodes)}
-        
-    finally:
-        cleanup_temp_key(ssh_key_path)
+    return INVENTORY_PATH
 
-def configure_master_nodes(**context):
-    """Install K3s on master nodes"""
-    cluster_info = context['ti'].xcom_pull(task_ids='fetch_cluster_info')
-    
-    if not isinstance(cluster_info, dict):
-        raise ValueError(f"Expected dict, got {type(cluster_info)}")
-    
-    ssh_key_path = create_temp_ssh_key()
-    results = []
-    
-    try:
-        for cluster in cluster_info['clusters']:
-            cluster_id = cluster['id']
-            cluster_name = cluster['name']
-            master_ip = cluster['master']['public_ip']
-            
-            print(f"Configuring master for cluster: {cluster_name} ({master_ip})")
-            
-            # Installation script
-            install_script = f"""#!/bin/bash
-set -ex
-exec > >(tee /var/log/k3s-master-install.log) 2>&1
 
-echo "Starting K3s master installation at $(date)"
+# --------------------------------------------------
+# Step 3: Fetch kubeconfig & store in DB
+# --------------------------------------------------
+def fetch_kubeconfig(**context):
+    clusters = context["ti"].xcom_pull(task_ids="fetch_cluster_info")
+    master_ip = clusters[0]["master"]["public_ip"]
 
-# Get public IP for TLS SAN
-PUBLIC_IP=$(curl -s http://169.254.169.254/latest/meta-data/public-ipv4)
-echo "Public IP: $PUBLIC_IP"
+    load_dotenv(expanduser("/opt/airflow/dags/.env"))
 
-# Install K3s server
-echo "Installing K3s server..."
-curl -sfL https://get.k3s.io | sh -s - server \\
-  --write-kubeconfig-mode 644 \\
-  --tls-san "$PUBLIC_IP" \\
-  --node-taint "node-role.kubernetes.io/control-plane=true:NoSchedule"
+    kubeconfig_path = "/opt/airflow/dags/tmp_kubeconfig"
 
-# Wait for K3s to be fully ready
-echo "Waiting for K3s to be ready..."
-until systemctl is-active --quiet k3s; do
-  echo "K3s service not active yet..."
-  sleep 2
-done
+    os.system(
+        f"ssh -o StrictHostKeyChecking=no "
+        f"-i /opt/airflow/dags/.ssh/id_rsa "
+        f"ubuntu@{master_ip} "
+        f"'cat /home/ubuntu/.kube/config' > {kubeconfig_path}"
+    )
 
-until [ -f /var/lib/rancher/k3s/server/node-token ]; do
-  echo "Token file not found yet..."
-  sleep 2
-done
+    with open(kubeconfig_path) as f:
+        kubeconfig = f.read()
 
-echo "K3s is ready"
-
-# Setup kubeconfig for ubuntu user
-mkdir -p /home/ubuntu/.kube
-cp /etc/rancher/k3s/k3s.yaml /home/ubuntu/.kube/config
-sed -i "s/127.0.0.1/$PUBLIC_IP/g" /home/ubuntu/.kube/config
-chown -R ubuntu:ubuntu /home/ubuntu/.kube
-
-# Wait a bit more for API server
-sleep 15
-
-# Patch Traefik to NodePort
-echo "Configuring Traefik..."
-/usr/local/bin/kubectl --kubeconfig=/etc/rancher/k3s/k3s.yaml \\
-  -n kube-system patch svc traefik --type merge \\
-  -p '{{"spec":{{"type":"NodePort","ports":[{{"name":"web","port":80,"protocol":"TCP","targetPort":8000,"nodePort":30080}},{{"name":"websecure","port":443,"protocol":"TCP","targetPort":8443,"nodePort":30443}}]}}}}'
-
-echo "Master configuration complete at $(date)"
-"""
-            
-            try:
-                result = execute_remote_script(master_ip, ssh_key_path, install_script, timeout=300)
-                
-                if result.returncode != 0:
-                    raise Exception(f"Master install failed: {result.stderr}")
-                
-                print(f"✓ Master configured: {cluster_name}")
-                print(f"Output: {result.stdout[-500:]}")  # Last 500 chars
-                
-                results.append({
-                    'cluster_id': cluster_id,
-                    'cluster_name': cluster_name,
-                    'status': 'configured'
-                })
-                
-            except Exception as e:
-                print(f"✗ Failed to configure master {cluster_name}: {str(e)}")
-                results.append({
-                    'cluster_id': cluster_id,
-                    'cluster_name': cluster_name,
-                    'status': 'failed',
-                    'error': str(e)
-                })
-        
-        return results
-        
-    finally:
-        cleanup_temp_key(ssh_key_path)
-
-def configure_worker_nodes(**context):
-    """Install K3s agent on worker nodes using SSH to fetch token"""
-    cluster_info = context['ti'].xcom_pull(task_ids='fetch_cluster_info')
-    
-    if not isinstance(cluster_info, dict):
-        raise ValueError(f"Expected dict, got {type(cluster_info)}")
-    
-    ssh_key_path = create_temp_ssh_key()
-    results = []
-    
-    try:
-        for cluster in cluster_info['clusters']:
-            cluster_id = cluster['id']
-            cluster_name = cluster['name']
-            master_public_ip = cluster['master']['public_ip']
-            master_private_ip = cluster['master']['private_ip']
-            
-            print(f"\nConfiguring workers for cluster: {cluster_name}")
-            
-            for idx, worker in enumerate(cluster['workers']):
-                worker_ip = worker['public_ip']
-                
-                print(f"  Configuring worker {idx} ({worker_ip})...")
-                
-                # Worker installation script
-                install_script = f"""#!/bin/bash
-set -ex
-exec > >(tee /var/log/k3s-worker-install.log) 2>&1
-
-echo "=========================================="
-echo "Starting K3s worker installation at $(date)"
-echo "=========================================="
-
-MASTER_PRIVATE_IP="{master_private_ip}"
-MASTER_PUBLIC_IP="{master_public_ip}"
-
-echo "Master private IP: $MASTER_PRIVATE_IP"
-echo "Master public IP: $MASTER_PUBLIC_IP"
-
-# Function to fetch token via SSH - FIXED VERSION
-fetch_token_via_ssh() {{
-    local master_ip=$1
-    # Send debug output to stderr (>&2) so it doesn't contaminate the token
-    echo "Attempting to fetch token from $master_ip..." >&2
-    
-    local token_output
-    token_output=$(ssh -o ConnectTimeout=10 \\
-                -o StrictHostKeyChecking=no \\
-                -o UserKnownHostsFile=/dev/null \\
-                -i /home/ubuntu/.ssh/id_rsa \\
-                ubuntu@$master_ip \\
-                "sudo cat /var/lib/rancher/k3s/server/node-token" 2>&1)
-    
-    local ssh_exit=$?
-    if [ $ssh_exit -ne 0 ]; then
-        echo "SSH command failed with exit code: $ssh_exit" >&2
-        echo "Output: $token_output" >&2
-        return 1
-    fi
-    
-    # Only output the token to stdout
-    echo "$token_output"
-    return 0
-}}
-
-# Wait for master and fetch token
-echo "Waiting for master and token..."
-TOKEN=""
-MAX_ATTEMPTS=60
-ATTEMPT=0
-
-while [ $ATTEMPT -lt $MAX_ATTEMPTS ]; do
-    ATTEMPT=$((ATTEMPT + 1))
-    echo "Attempt $ATTEMPT/$MAX_ATTEMPTS at $(date)"
-    
-    # Try to fetch the token
-    if TOKEN=$(fetch_token_via_ssh "$MASTER_PRIVATE_IP" 2>&1); then
-        # Clean up the token - remove any whitespace/newlines
-        TOKEN=$(echo "$TOKEN" | tr -d '\\n\\r' | xargs)
-        
-        echo "Token fetched. Length: ${{#TOKEN}}"
-        echo "Token prefix: $(echo "$TOKEN" | head -c 20)"
-        
-        # Validate token (should start with K10 and be long)
-        if [ -n "$TOKEN" ] && [ "${{#TOKEN}}" -gt 50 ] && [[ "$TOKEN" == K10* ]]; then
-            echo "✓ Token validated successfully"
-            break
-        else
-            echo "Token validation failed:"
-            echo "  Empty: $([ -z "$TOKEN" ] && echo YES || echo NO)"
-            echo "  Length: ${{#TOKEN}}"
-            echo "  Starts with K10: $([[ "$TOKEN" == K10* ]] && echo YES || echo NO)"
-        fi
-    else
-        echo "Token fetch failed"
-    fi
-    
-    if [ $ATTEMPT -eq $MAX_ATTEMPTS ]; then
-        echo "✗ Failed to retrieve valid token after $MAX_ATTEMPTS attempts"
-        exit 1
-    fi
-    
-    sleep 10
-done
-
-# Verify master API is accessible
-echo "Verifying master K3s API at $MASTER_PRIVATE_IP:6443..."
-MAX_API_ATTEMPTS=30
-API_ATTEMPT=0
-
-while [ $API_ATTEMPT -lt $MAX_API_ATTEMPTS ]; do
-    API_ATTEMPT=$((API_ATTEMPT + 1))
-    
-    if timeout 5 bash -c "cat < /dev/null > /dev/tcp/$MASTER_PRIVATE_IP/6443" 2>/dev/null; then
-        echo "✓ Master K3s API is reachable"
-        break
-    fi
-    
-    if [ $API_ATTEMPT -eq $MAX_API_ATTEMPTS ]; then
-        echo "✗ Master API not reachable after $MAX_API_ATTEMPTS attempts"
-        exit 1
-    fi
-    
-    sleep 5
-done
-
-# Join cluster using INSTALL_K3S_EXEC for reliability
-echo "=========================================="
-echo "Joining K3s cluster..."
-echo "=========================================="
-echo "Server: https://$MASTER_PRIVATE_IP:6443"
-echo "Token (first 20 chars): $(echo "$TOKEN" | head -c 20)..."
-
-curl -sfL https://get.k3s.io | INSTALL_K3S_EXEC="agent --server https://$MASTER_PRIVATE_IP:6443 --token $TOKEN" sh -
-
-# Wait for agent to start
-echo "Waiting for k3s-agent to start..."
-sleep 10
-
-# Verify agent is running
-if systemctl is-active --quiet k3s-agent; then
-    echo "✓ K3s agent is running"
-    systemctl status k3s-agent --no-pager
-else
-    echo "✗ K3s agent failed to start"
-    systemctl status k3s-agent --no-pager || true
-    journalctl -u k3s-agent -n 50 --no-pager || true
-    exit 1
-fi
-
-# Cleanup
-rm -f /home/ubuntu/.ssh/id_rsa
-
-echo "=========================================="
-echo "✓ Worker configuration complete at $(date)"
-echo "=========================================="
-"""
-                
-                try:
-                    result = execute_remote_script(worker_ip, ssh_key_path, install_script, timeout=900)
-                    
-                    if result.returncode != 0:
-                        raise Exception(f"Worker install failed: {result.stderr}")
-                    
-                    print(f"  ✓ Worker {idx} configured successfully")
-                    
-                    results.append({
-                        'cluster_id': cluster_id,
-                        'worker_index': idx,
-                        'status': 'configured'
-                    })
-                    
-                except Exception as e:
-                    print(f"  ✗ Failed to configure worker {idx}: {str(e)}")
-                    results.append({
-                        'cluster_id': cluster_id,
-                        'worker_index': idx,
-                        'status': 'failed',
-                        'error': str(e)
-                    })
-        
-        return results
-        
-    finally:
-        cleanup_temp_key(ssh_key_path)
-
-def configure_edge_proxy(**context):
-    """Configure Traefik edge proxy"""
-    cluster_info = context['ti'].xcom_pull(task_ids='fetch_cluster_info')
-    
-    if not isinstance(cluster_info, dict):
-        raise ValueError(f"Expected dict, got {type(cluster_info)}")
-    
-    ssh_key_path = create_temp_ssh_key()
-    
-    try:
-        # Get edge proxy info
-        edge_ip = cluster_info['clusters'][0]['edge']['public_ip']
-        
-        print(f"Configuring edge proxy at {edge_ip}...")
-        
-        # Build dynamic Traefik config
-        router_config = ""
-        service_config = ""
-        
-        for cluster in cluster_info['clusters']:
-            cluster_id = cluster['id']
-            cluster_name = cluster['name']
-            master_private_ip = cluster['master']['private_ip']
-            
-            router_config += f"""
-  r_{cluster_id}:
-    rule: "HostRegexp(`{{{{app:[a-z0-9-]+}}}}.{cluster_name}.orchestronic.dev`)"
-    entryPoints:
-      - websecure
-    tls:
-      certResolver: letsencrypt
-    service: s_{cluster_id}
-"""
-            
-            service_config += f"""
-  s_{cluster_id}:
-    loadBalancer:
-      passHostHeader: true
-      servers:
-        - url: "http://{master_private_ip}:30080"
-"""
-        
-        traefik_script = f"""#!/bin/bash
-set -ex
-exec > >(tee /var/log/traefik-setup.log) 2>&1
-
-echo "Setting up Traefik edge proxy at $(date)"
-
-# Stop and remove existing Traefik if any
-docker stop traefik-edge 2>/dev/null || true
-docker rm traefik-edge 2>/dev/null || true
-
-# Create directories
-mkdir -p /etc/traefik /letsencrypt
-touch /letsencrypt/acme.json
-chmod 600 /letsencrypt/acme.json
-
-# Static config
-cat > /etc/traefik/traefik.yml << 'EOF'
-entryPoints:
-  web:
-    address: ":80"
-    http:
-      redirections:
-        entryPoint:
-          to: websecure
-          scheme: https
-  websecure:
-    address: ":443"
-
-providers:
-  file:
-    filename: /etc/traefik/dynamic.yml
-    watch: true
-
-certificatesResolvers:
-  letsencrypt:
-    acme:
-      email: "admin@orchestronic.dev"
-      storage: /letsencrypt/acme.json
-      httpChallenge:
-        entryPoint: web
-
-log:
-  level: INFO
-EOF
-
-# Dynamic config
-cat > /etc/traefik/dynamic.yml << 'EOF'
-http:
-  routers:{router_config}
-  services:{service_config}
-EOF
-
-echo "Traefik config files created"
-cat /etc/traefik/traefik.yml
-cat /etc/traefik/dynamic.yml
-
-# Start Traefik container
-docker run -d --restart unless-stopped \\
-  --name traefik-edge \\
-  -p 80:80 \\
-  -p 443:443 \\
-  -v /etc/traefik:/etc/traefik:ro \\
-  -v /letsencrypt:/letsencrypt \\
-  traefik:v2.11
-
-# Wait for container to start
-sleep 5
-
-if docker ps | grep -q traefik-edge; then
-    echo "✓ Traefik edge proxy started successfully"
-    docker logs traefik-edge
-else
-    echo "✗ Traefik failed to start"
-    docker logs traefik-edge
-    exit 1
-fi
-
-echo "Edge proxy configuration complete at $(date)"
-"""
-        
-        result = execute_remote_script(edge_ip, ssh_key_path, traefik_script, timeout=180)
-        
-        if result.returncode != 0:
-            raise Exception(f"Edge config failed: {result.stderr}")
-        
-        print(f"✓ Edge proxy configured at {edge_ip}")
-        return {'status': 'configured', 'edge_ip': edge_ip}
-        
-    except Exception as e:
-        print(f"✗ Failed to configure edge proxy: {str(e)}")
-        return {'status': 'failed', 'error': str(e)}
-        
-    finally:
-        cleanup_temp_key(ssh_key_path)
-
-def fetch_kubeconfigs(**context):
-    """Fetch kubeconfig from each master and store in database"""
-    cluster_info = context['ti'].xcom_pull(task_ids='fetch_cluster_info')
-    
-    if not isinstance(cluster_info, dict):
-        raise ValueError(f"Expected dict, got {type(cluster_info)}")
-        
-    load_dotenv(expanduser('/opt/airflow/dags/.env'))
-    ssh_key_path = create_temp_ssh_key()
-    
-    connection = psycopg2.connect(
+    conn = psycopg2.connect(
         user=os.getenv("DB_USER"),
         password=os.getenv("DB_PASSWORD"),
         host=os.getenv("DB_HOST"),
         port=os.getenv("DB_PORT"),
-        dbname=os.getenv("DB_NAME")
+        dbname=os.getenv("DB_NAME"),
     )
-    cursor = connection.cursor()
-    
-    try:
-        for cluster in cluster_info['clusters']:
-            cluster_id = cluster['id']
-            cluster_name = cluster['name']
-            master_ip = cluster['master']['public_ip']
-            
-            print(f"Fetching kubeconfig from {cluster_name} ({master_ip})...")
-            
-            try:
-                # Give K3s some time to settle
-                time.sleep(10)
-                
-                result = execute_remote_command(
-                    master_ip,
-                    ssh_key_path,
-                    'cat /home/ubuntu/.kube/config',
-                    timeout=30
-                )
-                
-                if result.returncode != 0:
-                    raise Exception(f"Failed to fetch kubeconfig: {result.stderr}")
-                
-                kubeconfig = result.stdout
-                
-                if not kubeconfig or len(kubeconfig) < 100:
-                    raise Exception("Kubeconfig appears to be empty or invalid")
-                
-                # Kubeconfig should already have the public IP from our setup script
-                # But double-check
-                if '127.0.0.1' in kubeconfig or 'localhost' in kubeconfig:
-                    kubeconfig = kubeconfig.replace('127.0.0.1', master_ip)
-                    kubeconfig = kubeconfig.replace('localhost', master_ip)
-                
-                # Update database
-                cursor.execute(
-                    '''UPDATE "AwsK8sCluster" 
-                       SET "kubeConfig" = %s
-                       WHERE "id" = %s;''',
-                    (kubeconfig, cluster_id)
-                )
-                connection.commit()
-                
-                print(f"✓ Kubeconfig stored for {cluster_name}")
-                
-            except Exception as e:
-                print(f"✗ Failed to fetch kubeconfig for {cluster_name}: {str(e)}")
-    
-    finally:
-        cursor.close()
-        connection.close()
-        cleanup_temp_key(ssh_key_path)
+    cur = conn.cursor()
 
-# -------------------------
+    cur.execute(
+        '''
+        UPDATE "AwsK8sCluster"
+        SET "kubeConfig" = %s
+        WHERE id = %s;
+        ''',
+        (kubeconfig, clusters[0]["cluster_id"]),
+    )
+
+    conn.commit()
+    cur.close()
+    conn.close()
+
+
+# --------------------------------------------------
 # DAG Definition
-# -------------------------
-
+# --------------------------------------------------
 with DAG(
-    'AWS_configure_k3s',
+    dag_id="AWS_configure_k3s",
     default_args=default_args,
     schedule_interval=None,
     catchup=False,
-    description='Configure K3s cluster using SSH (install K3s, join nodes, setup proxy)',
+    description="Configure K3s cluster using Ansible",
 ) as dag:
 
     fetch_info = PythonOperator(
@@ -814,29 +191,38 @@ with DAG(
         python_callable=fetch_cluster_info,
     )
 
-    setup_ssh = PythonOperator(
-        task_id="setup_ssh_keys",
-        python_callable=setup_ssh_keys_on_nodes,
+    write_inventory = PythonOperator(
+        task_id="generate_ansible_inventory",
+        python_callable=generate_inventory,
     )
 
-    config_masters = PythonOperator(
-        task_id="configure_master_nodes",
-        python_callable=configure_master_nodes,
+    ansible_master = BashOperator(
+        task_id="ansible_master",
+        bash_command=f"""
+        cd {ANSIBLE_BASE} &&
+        ansible-playbook playbooks/master.yml
+        """,
     )
 
-    config_workers = PythonOperator(
-        task_id="configure_worker_nodes",
-        python_callable=configure_worker_nodes,
+    ansible_worker = BashOperator(
+        task_id="ansible_worker",
+        bash_command=f"""
+        cd {ANSIBLE_BASE} &&
+        ansible-playbook playbooks/worker.yml
+        """,
     )
 
-    config_edge = PythonOperator(
-        task_id="configure_edge_proxy",
-        python_callable=configure_edge_proxy,
+    ansible_edge = BashOperator(
+        task_id="ansible_edge",
+        bash_command=f"""
+        cd {ANSIBLE_BASE} &&
+        ansible-playbook playbooks/edge.yml
+        """,
     )
 
-    fetch_kubeconfig = PythonOperator(
-        task_id="fetch_kubeconfigs",
-        python_callable=fetch_kubeconfigs,
+    store_kubeconfig = PythonOperator(
+        task_id="fetch_kubeconfig",
+        python_callable=fetch_kubeconfig,
     )
 
-    fetch_info >> setup_ssh >> config_masters >> config_workers >> config_edge >> fetch_kubeconfig
+    fetch_info >> write_inventory >> ansible_master >> ansible_worker >> ansible_edge >> store_kubeconfig
