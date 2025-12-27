@@ -633,7 +633,7 @@ def write_to_db(terraform_dir, configInfo, **context):
         try:
             with tempfile.NamedTemporaryFile(mode='w', delete=False) as tmp_key:
                 with open('/opt/airflow/dags/.ssh/id_rsa', 'r') as key_file:
-                    tmp_key.write(key_file.read().strip())
+                    tmp_key.write(key_file.read())
                 tmp_key_path = tmp_key.name
             
             os.chmod(tmp_key_path, 0o600)
