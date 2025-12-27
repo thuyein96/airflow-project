@@ -29,9 +29,7 @@ DAG_FOLDER = os.path.dirname(os.path.abspath(__file__))
 
 # Update paths to be relative to the DAG folder
 ANSIBLE_BASE = os.path.join(DAG_FOLDER, "ansible")
-# --- FIX: Define roles_path here ---
 roles_path = os.path.join(ANSIBLE_BASE, "roles") 
-# -----------------------------------
 INVENTORY_PATH = os.path.join(ANSIBLE_BASE, "inventory/hosts.ini")
 SSH_KEY_PATH = os.path.join(DAG_FOLDER, ".ssh/id_rsa")
 ENV_PATH = os.path.join(DAG_FOLDER, ".env")
@@ -44,7 +42,8 @@ def fetch_cluster_info(**context):
     if not resource_id:
         raise ValueError("resource_id missing")
 
-    load_dotenv(expanduser("/opt/airflow/dags/.env"))
+    # --- FIX: Use dynamic ENV_PATH ---
+    load_dotenv(ENV_PATH)
 
     conn = psycopg2.connect(
         user=os.getenv("DB_USER"),
@@ -84,7 +83,6 @@ def fetch_cluster_info(**context):
     cluster_data = []
 
     for cid, name, endpoint, tf_state in clusters:
-        # Handle both JSON string and dict types
         if isinstance(endpoint, str):
             endpoint = json.loads(endpoint) if endpoint else {}
         elif endpoint is None:
@@ -123,7 +121,6 @@ def fetch_cluster_info(**context):
 def generate_inventory(**context):
     clusters = context["ti"].xcom_pull(task_ids="fetch_cluster_info")
 
-    # Ensure the directory exists
     inventory_dir = os.path.dirname(INVENTORY_PATH)
     try:
         os.makedirs(inventory_dir, mode=0o755, exist_ok=True)
@@ -136,11 +133,10 @@ def generate_inventory(**context):
     else:
         inventory_path = INVENTORY_PATH
 
-    # --- FIX START: Add the key path to the inventory lines ---
     lines = ["[k3s_master]"]
     master = clusters[0]["master"]
 
-    # We add ansible_ssh_private_key_file to every host line
+    # Injecting SSH_KEY_PATH dynamically
     lines.append(
         f"master ansible_host={master['public_ip']} ansible_user=ubuntu ansible_ssh_private_key_file={SSH_KEY_PATH}"
     )
@@ -157,7 +153,6 @@ def generate_inventory(**context):
         lines.append(
             f"edge ansible_host={edge['public_ip']} ansible_user=ubuntu ansible_ssh_private_key_file={SSH_KEY_PATH}"
         )
-    # --- FIX END ---
 
     with open(inventory_path, "w") as f:
         f.write("\n".join(lines))
@@ -173,17 +168,22 @@ def fetch_kubeconfig(**context):
     clusters = context["ti"].xcom_pull(task_ids="fetch_cluster_info")
     master_ip = clusters[0]["master"]["public_ip"]
 
-    load_dotenv(expanduser("/home/azureuser/airflow/dags/.env"))
+    # --- FIX: Use dynamic ENV_PATH ---
+    load_dotenv(ENV_PATH)
 
-    kubeconfig_path = "/home/azureuser/airflow/dags/tmp_kubeconfig"
+    # --- FIX: Use dynamic path for temp file ---
+    kubeconfig_path = os.path.join(DAG_FOLDER, "tmp_kubeconfig")
 
-    # Ensure the command succeeds
-    result = os.system(
+    # --- FIX: Use dynamic SSH_KEY_PATH variable ---
+    cmd = (
         f"ssh -o StrictHostKeyChecking=no "
-        f"-i /home/azureuser/airflow/dags/.ssh/id_rsa "
+        f"-i {SSH_KEY_PATH} "
         f"ubuntu@{master_ip} "
         f"'cat /home/ubuntu/.kube/config' > {kubeconfig_path}"
     )
+    print(f"Executing: {cmd}")
+    
+    result = os.system(cmd)
     
     if result != 0:
         raise RuntimeError(f"Failed to fetch kubeconfig from master node {master_ip}")
@@ -219,6 +219,10 @@ def fetch_kubeconfig(**context):
     cur.close()
     conn.close()
     
+    # Cleanup temp file
+    if os.path.exists(kubeconfig_path):
+        os.remove(kubeconfig_path)
+
     print(f"Kubeconfig successfully stored for cluster {clusters[0]['cluster_id']}")
 
 
@@ -243,10 +247,12 @@ with DAG(
         python_callable=generate_inventory,
     )
 
+    # Added ANSIBLE_PRIVATE_KEY_FILE export to force override ansible.cfg
     ansible_master = BashOperator(
         task_id="ansible_master",
         bash_command=f"""
         export ANSIBLE_ROLES_PATH={roles_path} && \
+        export ANSIBLE_PRIVATE_KEY_FILE={SSH_KEY_PATH} && \
         cd {ANSIBLE_BASE} && \
         ansible-playbook -i {{{{ ti.xcom_pull(task_ids='generate_ansible_inventory') }}}} playbooks/master.yml
         """,
@@ -256,6 +262,7 @@ with DAG(
         task_id="ansible_worker",
         bash_command=f"""
         export ANSIBLE_ROLES_PATH={roles_path} && \
+        export ANSIBLE_PRIVATE_KEY_FILE={SSH_KEY_PATH} && \
         cd {ANSIBLE_BASE} && \
         ansible-playbook -i {{{{ ti.xcom_pull(task_ids='generate_ansible_inventory') }}}} playbooks/worker.yml
         """,
@@ -265,6 +272,7 @@ with DAG(
         task_id="ansible_edge",
         bash_command=f"""
         export ANSIBLE_ROLES_PATH={roles_path} && \
+        export ANSIBLE_PRIVATE_KEY_FILE={SSH_KEY_PATH} && \
         cd {ANSIBLE_BASE} && \
         ansible-playbook -i {{{{ ti.xcom_pull(task_ids='generate_ansible_inventory') }}}} playbooks/edge.yml
         """,
