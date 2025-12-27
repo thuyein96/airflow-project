@@ -111,7 +111,19 @@ def fetch_cluster_info(**context):
 def generate_inventory(**context):
     clusters = context["ti"].xcom_pull(task_ids="fetch_cluster_info")
 
-    Path(os.path.dirname(INVENTORY_PATH)).mkdir(parents=True, exist_ok=True)
+    # Create directory using os.makedirs with proper error handling
+    inventory_dir = os.path.dirname(INVENTORY_PATH)
+    try:
+        os.makedirs(inventory_dir, mode=0o755, exist_ok=True)
+    except PermissionError:
+        # If we can't create in /opt/airflow/dags/ansible, try a temp location
+        temp_base = "/tmp/ansible"
+        inventory_dir = f"{temp_base}/inventory"
+        os.makedirs(inventory_dir, mode=0o755, exist_ok=True)
+        inventory_path = f"{inventory_dir}/hosts.ini"
+        print(f"Warning: Using temp directory {inventory_path}")
+    else:
+        inventory_path = INVENTORY_PATH
 
     lines = ["[k3s_master]"]
     master = clusters[0]["master"]
@@ -133,10 +145,11 @@ def generate_inventory(**context):
             f"edge ansible_host={edge['public_ip']} ansible_user=ubuntu"
         )
 
-    with open(INVENTORY_PATH, "w") as f:
+    with open(inventory_path, "w") as f:
         f.write("\n".join(lines))
 
-    return INVENTORY_PATH
+    print(f"Inventory file created at: {inventory_path}")
+    return inventory_path
 
 
 # --------------------------------------------------
@@ -150,15 +163,25 @@ def fetch_kubeconfig(**context):
 
     kubeconfig_path = "/opt/airflow/dags/tmp_kubeconfig"
 
-    os.system(
+    # Ensure the command succeeds
+    result = os.system(
         f"ssh -o StrictHostKeyChecking=no "
         f"-i /opt/airflow/dags/.ssh/id_rsa "
         f"ubuntu@{master_ip} "
         f"'cat /home/ubuntu/.kube/config' > {kubeconfig_path}"
     )
+    
+    if result != 0:
+        raise RuntimeError(f"Failed to fetch kubeconfig from master node {master_ip}")
+
+    if not os.path.exists(kubeconfig_path):
+        raise RuntimeError(f"Kubeconfig file not created at {kubeconfig_path}")
 
     with open(kubeconfig_path) as f:
         kubeconfig = f.read()
+
+    if not kubeconfig.strip():
+        raise RuntimeError("Kubeconfig is empty")
 
     conn = psycopg2.connect(
         user=os.getenv("DB_USER"),
@@ -181,6 +204,8 @@ def fetch_kubeconfig(**context):
     conn.commit()
     cur.close()
     conn.close()
+    
+    print(f"Kubeconfig successfully stored for cluster {clusters[0]['cluster_id']}")
 
 
 # --------------------------------------------------
@@ -208,7 +233,7 @@ with DAG(
         task_id="ansible_master",
         bash_command=f"""
         cd {ANSIBLE_BASE} &&
-        ansible-playbook playbooks/master.yml
+        ansible-playbook -i {{{{ ti.xcom_pull(task_ids='generate_ansible_inventory') }}}} playbooks/master.yml
         """,
     )
 
@@ -216,7 +241,7 @@ with DAG(
         task_id="ansible_worker",
         bash_command=f"""
         cd {ANSIBLE_BASE} &&
-        ansible-playbook playbooks/worker.yml
+        ansible-playbook -i {{{{ ti.xcom_pull(task_ids='generate_ansible_inventory') }}}} playbooks/worker.yml
         """,
     )
 
@@ -224,7 +249,7 @@ with DAG(
         task_id="ansible_edge",
         bash_command=f"""
         cd {ANSIBLE_BASE} &&
-        ansible-playbook playbooks/edge.yml
+        ansible-playbook -i {{{{ ti.xcom_pull(task_ids='generate_ansible_inventory') }}}} playbooks/edge.yml
         """,
     )
 
