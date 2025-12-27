@@ -226,9 +226,10 @@ def fetch_cluster_info(**context):
         'clusters': cluster_info_list
     }
 
-def setup_ssh_keys_on_nodes(cluster_info, **context):
+def setup_ssh_keys_on_nodes(**context):
     """Setup SSH keys on all nodes so they can communicate"""
-    # cluster_info is already a dict from XCom, no need to parse
+    cluster_info = context['ti'].xcom_pull(task_ids='fetch_cluster_info')
+    
     if not isinstance(cluster_info, dict):
         raise ValueError(f"Expected dict, got {type(cluster_info)}")
     
@@ -305,9 +306,10 @@ echo "SSH keys configured successfully"
     finally:
         cleanup_temp_key(ssh_key_path)
 
-def configure_master_nodes(cluster_info, **context):
+def configure_master_nodes(**context):
     """Install K3s on master nodes"""
-    # cluster_info is already a dict from XCom
+    cluster_info = context['ti'].xcom_pull(task_ids='fetch_cluster_info')
+    
     if not isinstance(cluster_info, dict):
         raise ValueError(f"Expected dict, got {type(cluster_info)}")
     
@@ -401,9 +403,10 @@ echo "Master configuration complete at $(date)"
     finally:
         cleanup_temp_key(ssh_key_path)
 
-def configure_worker_nodes(cluster_info, **context):
+def configure_worker_nodes(**context):
     """Install K3s agent on worker nodes using SSH to fetch token"""
-    # cluster_info is already a dict from XCom
+    cluster_info = context['ti'].xcom_pull(task_ids='fetch_cluster_info')
+    
     if not isinstance(cluster_info, dict):
         raise ValueError(f"Expected dict, got {type(cluster_info)}")
     
@@ -569,9 +572,10 @@ echo "Worker configuration complete at $(date)"
     finally:
         cleanup_temp_key(ssh_key_path)
 
-def configure_edge_proxy(cluster_info, **context):
+def configure_edge_proxy(**context):
     """Configure Traefik edge proxy"""
-    # cluster_info is already a dict from XCom
+    cluster_info = context['ti'].xcom_pull(task_ids='fetch_cluster_info')
+    
     if not isinstance(cluster_info, dict):
         raise ValueError(f"Expected dict, got {type(cluster_info)}")
     
@@ -705,12 +709,13 @@ echo "Edge proxy configuration complete at $(date)"
     finally:
         cleanup_temp_key(ssh_key_path)
 
-def fetch_kubeconfigs(cluster_info, **context):
+def fetch_kubeconfigs(**context):
     """Fetch kubeconfig from each master and store in database"""
-    # cluster_info is already a dict from XCom
+    cluster_info = context['ti'].xcom_pull(task_ids='fetch_cluster_info')
+    
     if not isinstance(cluster_info, dict):
         raise ValueError(f"Expected dict, got {type(cluster_info)}")
-    
+        
     load_dotenv(expanduser('/opt/airflow/dags/.env'))
     ssh_key_path = create_temp_ssh_key()
     
@@ -795,31 +800,26 @@ with DAG(
     setup_ssh = PythonOperator(
         task_id="setup_ssh_keys",
         python_callable=setup_ssh_keys_on_nodes,
-        op_args=["{{ ti.xcom_pull(task_ids='fetch_cluster_info') }}"],
     )
 
     config_masters = PythonOperator(
         task_id="configure_master_nodes",
         python_callable=configure_master_nodes,
-        op_args=["{{ ti.xcom_pull(task_ids='fetch_cluster_info') }}"],
     )
 
     config_workers = PythonOperator(
         task_id="configure_worker_nodes",
         python_callable=configure_worker_nodes,
-        op_args=["{{ ti.xcom_pull(task_ids='fetch_cluster_info') }}"],
     )
 
     config_edge = PythonOperator(
         task_id="configure_edge_proxy",
         python_callable=configure_edge_proxy,
-        op_args=["{{ ti.xcom_pull(task_ids='fetch_cluster_info') }}"],
     )
 
     fetch_kubeconfig = PythonOperator(
         task_id="fetch_kubeconfigs",
         python_callable=fetch_kubeconfigs,
-        op_args=["{{ ti.xcom_pull(task_ids='fetch_cluster_info') }}"],
     )
 
     fetch_info >> setup_ssh >> config_masters >> config_workers >> config_edge >> fetch_kubeconfig
