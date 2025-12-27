@@ -241,7 +241,8 @@ with DAG(
     ansible_master = BashOperator(
         task_id="ansible_master",
         bash_command=f"""
-        cd {ANSIBLE_BASE} &&
+        export ANSIBLE_ROLES_PATH={roles_path} && \
+        cd {ANSIBLE_BASE} && \
         ansible-playbook -i {{{{ ti.xcom_pull(task_ids='generate_ansible_inventory') }}}} playbooks/master.yml
         """,
     )
@@ -249,7 +250,8 @@ with DAG(
     ansible_worker = BashOperator(
         task_id="ansible_worker",
         bash_command=f"""
-        cd {ANSIBLE_BASE} &&
+        export ANSIBLE_ROLES_PATH={roles_path} && \
+        cd {ANSIBLE_BASE} && \
         ansible-playbook -i {{{{ ti.xcom_pull(task_ids='generate_ansible_inventory') }}}} playbooks/worker.yml
         """,
     )
@@ -257,7 +259,8 @@ with DAG(
     ansible_edge = BashOperator(
         task_id="ansible_edge",
         bash_command=f"""
-        cd {ANSIBLE_BASE} &&
+        export ANSIBLE_ROLES_PATH={roles_path} && \
+        cd {ANSIBLE_BASE} && \
         ansible-playbook -i {{{{ ti.xcom_pull(task_ids='generate_ansible_inventory') }}}} playbooks/edge.yml
         """,
     )
