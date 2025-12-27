@@ -403,7 +403,7 @@ resource "aws_instance" "k3s_edge" {{
   depends_on = [aws_instance.k3s_master]
 }}
 
-# K3s Worker Nodes (UPDATED USER DATA)
+# K3s Worker Nodes (FIXED USER DATA)
 resource "aws_instance" "k3s_worker" {{
   for_each = {{
     for item in flatten([
@@ -426,52 +426,75 @@ resource "aws_instance" "k3s_worker" {{
   associate_public_ip_address = true
   key_name = aws_key_pair.k3s_auth.key_name
 
-  # K3s worker installation script using SSH to fetch token
   user_data = base64encode(<<-EOF
               #!/bin/bash
-              set -e
+              set -ex  # Enable error logging
+              exec > >(tee /var/log/user-data.log) 2>&1
+              
+              echo "Starting worker node setup..."
               apt-get update
               apt-get install -y curl wget git awscli
               
-              # 1. SETUP SSH KEYS
-              # We inject the private key so this worker can SSH to the master
+              # Setup SSH directory
               mkdir -p /home/ubuntu/.ssh
-              cat > /home/ubuntu/.ssh/id_rsa <<'KEYEOF'
-              __SSH_PRIVATE_KEY__
-              KEYEOF
+              chmod 700 /home/ubuntu/.ssh
+              
+              # Write private key (using cat with explicit EOF marker)
+              cat > /home/ubuntu/.ssh/id_rsa << 'SSH_KEY_EOF'
+__SSH_PRIVATE_KEY__
+SSH_KEY_EOF
+              
               chmod 600 /home/ubuntu/.ssh/id_rsa
-              chown ubuntu:ubuntu /home/ubuntu/.ssh/id_rsa
+              chown -R ubuntu:ubuntu /home/ubuntu/.ssh
               
-              # Wait for master to be ready
-              sleep 30
+              # Verify key was written correctly
+              if [ ! -s /home/ubuntu/.ssh/id_rsa ]; then
+                echo "ERROR: Private key file is empty!" >&2
+                exit 1
+              fi
               
-              # Get master private IP (Terraform will render the actual IP here)
+              # Get master IP
               MASTER_IP="${{aws_instance.k3s_master[each.value.cluster_id].private_ip}}"
-
-              # 2. FETCH TOKEN VIA SSH
-              TOKEN=""
+              echo "Master IP: $MASTER_IP"
+              
+              # Wait for master to be ready (check SSH connectivity)
+              echo "Waiting for master SSH to be ready..."
               for i in $(seq 1 60); do
-                # Try to cat the token file from the master
-                TOKEN=$(ssh -o StrictHostKeyChecking=no -i /home/ubuntu/.ssh/id_rsa ubuntu@$MASTER_IP "sudo cat /var/lib/rancher/k3s/server/node-token" 2>/dev/null || true)
-                
-                if [ -n "$TOKEN" ]; then
-                  echo "Got token."
+                if sudo -u ubuntu ssh -o StrictHostKeyChecking=no -o ConnectTimeout=5 -i /home/ubuntu/.ssh/id_rsa ubuntu@$MASTER_IP "echo 'SSH OK'" 2>/dev/null; then
+                  echo "Master SSH is ready"
                   break
                 fi
-                echo "Waiting for token..."
-                sleep 5
+                echo "Attempt $i/60: Master SSH not ready yet..."
+                sleep 10
+              done
+              
+              # Fetch token via SSH
+              echo "Fetching K3s token from master..."
+              TOKEN=""
+              for i in $(seq 1 60); do
+                TOKEN=$(sudo -u ubuntu ssh -o StrictHostKeyChecking=no -o ConnectTimeout=10 -i /home/ubuntu/.ssh/id_rsa ubuntu@$MASTER_IP "sudo cat /var/lib/rancher/k3s/server/node-token" 2>/dev/null || true)
+                
+                if [ -n "$TOKEN" ]; then
+                  echo "Successfully retrieved token"
+                  break
+                fi
+                echo "Attempt $i/60: Token not available yet..."
+                sleep 10
               done
               
               if [ -z "$TOKEN" ]; then
-                echo "Failed to fetch K3s token from $MASTER_IP via SSH" >&2
+                echo "ERROR: Failed to fetch K3s token from $MASTER_IP" >&2
                 exit 1
               fi
-
-              # 3. JOIN CLUSTER
+              
+              # Join cluster
+              echo "Joining K3s cluster..."
               curl -sfL https://get.k3s.io | K3S_URL="https://$MASTER_IP:6443" K3S_TOKEN="$TOKEN" sh -s - agent
               
-              # Clean up key for security
+              # Clean up private key
               rm -f /home/ubuntu/.ssh/id_rsa
+              
+              echo "Worker node setup complete!"
               EOF
   )
   
@@ -610,7 +633,7 @@ def write_to_db(terraform_dir, configInfo, **context):
         try:
             with tempfile.NamedTemporaryFile(mode='w', delete=False) as tmp_key:
                 with open('/opt/airflow/dags/.ssh/id_rsa', 'r') as key_file:
-                    tmp_key.write(key_file.read())
+                    tmp_key.write(key_file.read().rstrip('\n'))
                 tmp_key_path = tmp_key.name
             
             os.chmod(tmp_key_path, 0o600)
