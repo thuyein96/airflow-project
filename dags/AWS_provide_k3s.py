@@ -633,7 +633,7 @@ def write_to_db(terraform_dir, configInfo, **context):
         try:
             with tempfile.NamedTemporaryFile(mode='w', delete=False) as tmp_key:
                 with open('/opt/airflow/dags/.ssh/id_rsa', 'r') as key_file:
-                    tmp_key.write(key_file.read().rstrip('\n'))
+                    tmp_key.write(key_file.read().strip())
                 tmp_key_path = tmp_key.name
             
             os.chmod(tmp_key_path, 0o600)
@@ -756,10 +756,17 @@ with DAG(
         task_id="terraform_cleanup",
         bash_command=(
             "cd {{ ti.xcom_pull(task_ids='create_terraform_dir') }} && "
+            # Unlock if locked
             "if [ -f .terraform.tfstate.lock.info ]; then "
             "  LOCK_ID=$(cat .terraform.tfstate.lock.info | grep -oP '(?<=\"ID\":\")[^\"]*') && "
             "  terraform force-unlock -force $LOCK_ID || true; "
-            "fi"
+            "fi && "
+            # DANGEROUS: Only do this if you are 100% sure 'write_to_db' succeeded
+            # Remove the hidden .terraform folder which contains the heavy binaries
+            "rm -rf .terraform && "
+            # Optionally remove the whole directory if you don't need debugging logs
+            # "cd .. && rm -rf k3s" 
+            "echo 'Cleanup complete'"
         ),
     )
 
