@@ -436,7 +436,7 @@ resource "aws_instance" "k3s_worker" {{
               # 1. SETUP SSH KEYS
               # We inject the private key so this worker can SSH to the master
               mkdir -p /home/ubuntu/.ssh
-              cat > /home/ubuntu/.ssh/id_rsa <<'KEYEOF'
+cat > /home/ubuntu/.ssh/id_rsa <<'KEYEOF'
 __SSH_PRIVATE_KEY__
 KEYEOF
               chmod 600 /home/ubuntu/.ssh/id_rsa
