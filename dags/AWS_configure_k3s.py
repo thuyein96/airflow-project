@@ -21,8 +21,17 @@ default_args = {
     "retry_delay": timedelta(minutes=3),
 }
 
-ANSIBLE_BASE = "/home/azureuser/airflow/dags/ansible"
-INVENTORY_PATH = f"{ANSIBLE_BASE}/inventory/hosts.ini"
+# --------------------------------------------------
+# Dynamic Path Configuration
+# --------------------------------------------------
+# Gets the folder where this DAG file is located (e.g., /opt/airflow/dags)
+DAG_FOLDER = os.path.dirname(os.path.abspath(__file__))
+
+# Update paths to be relative to the DAG folder
+ANSIBLE_BASE = os.path.join(DAG_FOLDER, "ansible")
+INVENTORY_PATH = os.path.join(ANSIBLE_BASE, "inventory/hosts.ini")
+SSH_KEY_PATH = os.path.join(DAG_FOLDER, ".ssh/id_rsa")
+ENV_PATH = os.path.join(DAG_FOLDER, ".env")
 
 # --------------------------------------------------
 # Step 1: Fetch cluster info from DB
