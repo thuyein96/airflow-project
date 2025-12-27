@@ -432,7 +432,9 @@ def configure_worker_nodes(**context):
 set -ex
 exec > >(tee /var/log/k3s-worker-install.log) 2>&1
 
+echo "=========================================="
 echo "Starting K3s worker installation at $(date)"
+echo "=========================================="
 
 MASTER_PRIVATE_IP="{master_private_ip}"
 MASTER_PUBLIC_IP="{master_public_ip}"
@@ -440,16 +442,33 @@ MASTER_PUBLIC_IP="{master_public_ip}"
 echo "Master private IP: $MASTER_PRIVATE_IP"
 echo "Master public IP: $MASTER_PUBLIC_IP"
 
-# Function to fetch token via SSH
+# Function to fetch token via SSH - FIXED VERSION
 fetch_token_via_ssh() {{
     local master_ip=$1
-
-    TOKEN=$(ssh -i /home/ubuntu/.ssh/id_rsa ubuntu@$master_ip "sudo cat /var/lib/rancher/k3s/server/node-token")
+    # Send debug output to stderr (>&2) so it doesn't contaminate the token
+    echo "Attempting to fetch token from $master_ip..." >&2
     
-    echo "$TOKEN"
+    local token_output
+    token_output=$(ssh -o ConnectTimeout=10 \\
+                -o StrictHostKeyChecking=no \\
+                -o UserKnownHostsFile=/dev/null \\
+                -i /home/ubuntu/.ssh/id_rsa \\
+                ubuntu@$master_ip \\
+                "sudo cat /var/lib/rancher/k3s/server/node-token" 2>&1)
+    
+    local ssh_exit=$?
+    if [ $ssh_exit -ne 0 ]; then
+        echo "SSH command failed with exit code: $ssh_exit" >&2
+        echo "Output: $token_output" >&2
+        return 1
+    fi
+    
+    # Only output the token to stdout
+    echo "$token_output"
+    return 0
 }}
 
-# Wait for master to be SSH accessible and token available
+# Wait for master and fetch token
 echo "Waiting for master and token..."
 TOKEN=""
 MAX_ATTEMPTS=60
@@ -457,34 +476,32 @@ ATTEMPT=0
 
 while [ $ATTEMPT -lt $MAX_ATTEMPTS ]; do
     ATTEMPT=$((ATTEMPT + 1))
-    echo "Attempt $ATTEMPT/$MAX_ATTEMPTS"
+    echo "Attempt $ATTEMPT/$MAX_ATTEMPTS at $(date)"
     
-    # First check SSH connectivity to master
-    if ssh -o ConnectTimeout=5 \\
-           -o StrictHostKeyChecking=no \\
-           -o UserKnownHostsFile=/dev/null \\
-           -i /home/ubuntu/.ssh/id_rsa \\
-           ubuntu@$MASTER_PRIVATE_IP \\
-           "echo 'SSH_OK'" 2>/dev/null | grep -q "SSH_OK"; then
+    # Try to fetch the token
+    if TOKEN=$(fetch_token_via_ssh "$MASTER_PRIVATE_IP" 2>&1); then
+        # Clean up the token - remove any whitespace/newlines
+        TOKEN=$(echo "$TOKEN" | tr -d '\\n\\r' | xargs)
         
-        echo "  SSH connection to master: OK"
+        echo "Token fetched. Length: ${{#TOKEN}}"
+        echo "Token prefix: $(echo "$TOKEN" | head -c 20)"
         
-        # Now try to fetch the token
-        TOKEN=$(fetch_token_via_ssh "$MASTER_PRIVATE_IP")
-        
-        # Validate token (should be K10... format and long)
-        if [ -n "$TOKEN" ] && [ "${{#TOKEN}}" -gt 50 ] && echo "$TOKEN" | grep -q "K10"; then
-            echo "✓ Token retrieved successfully"
+        # Validate token (should start with K10 and be long)
+        if [ -n "$TOKEN" ] && [ "${{#TOKEN}}" -gt 50 ] && [[ "$TOKEN" == K10* ]]; then
+            echo "✓ Token validated successfully"
             break
         else
-            echo "  Token not ready yet or invalid"
+            echo "Token validation failed:"
+            echo "  Empty: $([ -z "$TOKEN" ] && echo YES || echo NO)"
+            echo "  Length: ${{#TOKEN}}"
+            echo "  Starts with K10: $([[ "$TOKEN" == K10* ]] && echo YES || echo NO)"
         fi
     else
-        echo "  Cannot connect to master via SSH yet"
+        echo "Token fetch failed"
     fi
     
     if [ $ATTEMPT -eq $MAX_ATTEMPTS ]; then
-        echo "✗ Failed to retrieve token after $MAX_ATTEMPTS attempts"
+        echo "✗ Failed to retrieve valid token after $MAX_ATTEMPTS attempts"
         exit 1
     fi
     
@@ -492,7 +509,7 @@ while [ $ATTEMPT -lt $MAX_ATTEMPTS ]; do
 done
 
 # Verify master API is accessible
-echo "Verifying master K3s API..."
+echo "Verifying master K3s API at $MASTER_PRIVATE_IP:6443..."
 MAX_API_ATTEMPTS=30
 API_ATTEMPT=0
 
@@ -509,33 +526,39 @@ while [ $API_ATTEMPT -lt $MAX_API_ATTEMPTS ]; do
         exit 1
     fi
     
-    echo "API not ready yet (attempt $API_ATTEMPT/$MAX_API_ATTEMPTS)..."
     sleep 5
 done
 
-# Join the cluster
+# Join cluster using INSTALL_K3S_EXEC for reliability
+echo "=========================================="
 echo "Joining K3s cluster..."
-curl -sfL https://get.k3s.io | \\
-  K3S_URL="https://$MASTER_PRIVATE_IP:6443" \\
-  K3S_TOKEN="$TOKEN" \\
-  sh -s - agent
+echo "=========================================="
+echo "Server: https://$MASTER_PRIVATE_IP:6443"
+echo "Token (first 20 chars): $(echo "$TOKEN" | head -c 20)..."
+
+curl -sfL https://get.k3s.io | INSTALL_K3S_EXEC="agent --server https://$MASTER_PRIVATE_IP:6443 --token $TOKEN" sh -
 
 # Wait for agent to start
+echo "Waiting for k3s-agent to start..."
 sleep 10
 
 # Verify agent is running
 if systemctl is-active --quiet k3s-agent; then
     echo "✓ K3s agent is running"
+    systemctl status k3s-agent --no-pager
 else
     echo "✗ K3s agent failed to start"
-    systemctl status k3s-agent
+    systemctl status k3s-agent --no-pager || true
+    journalctl -u k3s-agent -n 50 --no-pager || true
     exit 1
 fi
 
-# Cleanup private key for security
+# Cleanup
 rm -f /home/ubuntu/.ssh/id_rsa
 
-echo "Worker configuration complete at $(date)"
+echo "=========================================="
+echo "✓ Worker configuration complete at $(date)"
+echo "=========================================="
 """
                 
                 try:
