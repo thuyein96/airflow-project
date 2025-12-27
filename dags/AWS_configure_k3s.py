@@ -167,8 +167,16 @@ def fetch_cluster_info(**context):
     for cluster in clusters:
         cluster_id, clusterName, nodeCount, clusterEndpoint, terraformState = cluster
         
-        master_info = json.loads(clusterEndpoint) if clusterEndpoint else {}
-        state = json.loads(terraformState) if terraformState else {}
+        # Handle both string and dict types (psycopg2 auto-parses JSONB)
+        if isinstance(clusterEndpoint, str):
+            master_info = json.loads(clusterEndpoint) if clusterEndpoint else {}
+        else:
+            master_info = clusterEndpoint if clusterEndpoint else {}
+        
+        if isinstance(terraformState, str):
+            state = json.loads(terraformState) if terraformState else {}
+        else:
+            state = terraformState if terraformState else {}
         
         # Extract worker IPs from terraform state
         worker_ips = []
