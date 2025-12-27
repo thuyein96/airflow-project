@@ -72,8 +72,16 @@ def fetch_cluster_info(**context):
     cluster_data = []
 
     for cid, name, endpoint, tf_state in clusters:
-        endpoint = json.loads(endpoint) if endpoint else {}
-        tf_state = json.loads(tf_state) if tf_state else {}
+        # Handle both JSON string and dict types
+        if isinstance(endpoint, str):
+            endpoint = json.loads(endpoint) if endpoint else {}
+        elif endpoint is None:
+            endpoint = {}
+        
+        if isinstance(tf_state, str):
+            tf_state = json.loads(tf_state) if tf_state else {}
+        elif tf_state is None:
+            tf_state = {}
 
         workers = []
         edge = None
