@@ -496,12 +496,10 @@ def write_instance_info_to_db(terraform_dir, configInfo, **context):
             '''UPDATE "AwsK8sCluster" 
                SET "clusterEndpoint" = %s, 
                    "terraformState" = %s,
-                   "provisionStatus" = %s
                WHERE "id" = %s;''',
             (
                 json.dumps(master_info),
-                json.dumps(state),
-                'provisioned',  # New status field
+                json.dumps(state), # New status field
                 cluster_id
             )
         )

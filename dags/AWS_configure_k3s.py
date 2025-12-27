@@ -155,7 +155,7 @@ def fetch_cluster_info(**context):
     cursor.execute(
         '''SELECT "id", "clusterName", "nodeCount", "clusterEndpoint", "terraformState" 
            FROM "AwsK8sCluster" 
-           WHERE "resourceConfigId" = %s AND "provisionStatus" = 'provisioned';''',
+           WHERE "resourceConfigId" = %s;''',
         (resourceConfigId,)
     )
     clusters = cursor.fetchall()
@@ -746,9 +746,9 @@ def fetch_kubeconfigs(cluster_info, **context):
                 # Update database
                 cursor.execute(
                     '''UPDATE "AwsK8sCluster" 
-                       SET "kubeConfig" = %s, "provisionStatus" = %s
+                       SET "kubeConfig" = %s
                        WHERE "id" = %s;''',
-                    (kubeconfig, 'configured', cluster_id)
+                    (kubeconfig, cluster_id)
                 )
                 connection.commit()
                 
@@ -756,12 +756,6 @@ def fetch_kubeconfigs(cluster_info, **context):
                 
             except Exception as e:
                 print(f"✗ Failed to fetch kubeconfig for {cluster_name}: {str(e)}")
-                # Still mark as configured even if kubeconfig fetch fails
-                cursor.execute(
-                    'UPDATE "AwsK8sCluster" SET "provisionStatus" = %s WHERE "id" = %s;',
-                    ('configured_no_kubeconfig', cluster_id)
-                )
-                connection.commit()
     
     finally:
         cursor.close()
