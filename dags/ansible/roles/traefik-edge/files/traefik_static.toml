@@ -1,0 +1,14 @@
+[entryPoints]
+  [entryPoints.web]
+    address = ":80"
+  [entryPoints.websecure]
+    address = ":443"
+
+[providers]
+  [providers.file]
+    filename = "/etc/traefik/dynamic.toml"
+    watch = true
+
+[api]
+  dashboard = true
+  insecure = true  # Be careful with this in production!

@@ -1,0 +1,47 @@
+- name: Install Docker
+  apt:
+    name: docker.io
+    update_cache: yes
+
+- name: Enable Docker
+  systemd:
+    name: docker
+    state: started
+    enabled: yes
+
+# 2. Create a directory on the Edge node to hold your configs
+- name: Create Traefik config directory
+  file:
+    path: /etc/traefik-edge
+    state: directory
+    mode: '0755'
+
+# 3. Copy the static config file
+- name: Copy Static Configuration
+  copy:
+    src: traefik_static.toml
+    dest: /etc/traefik-edge/traefik.toml
+    mode: '0644'
+
+# 4. Process the template to generate the dynamic config with Worker IPs
+# This fills in the IPs from your inventory [k3s_workers] group
+- name: Generate Dynamic Configuration
+  template:
+    src: traefik_dynamic.toml.j2
+    dest: /etc/traefik-edge/dynamic.toml
+    mode: '0644'
+
+# 5. Run Traefik with Volumes
+# We mount the files we just created into the container
+- name: Run Traefik edge proxy
+  shell: |
+    docker rm -f traefik-edge || true
+    docker run -d \
+      --name traefik-edge \
+      --restart unless-stopped \
+      -p 80:80 \
+      -p 443:443 \
+      -p 8080:8080 \
+      -v /etc/traefik-edge/traefik.toml:/etc/traefik/traefik.toml \
+      -v /etc/traefik-edge/dynamic.toml:/etc/traefik/dynamic.toml \
+      traefik:v2.11

@@ -1,14 +1,13 @@
 import os
 import json
 import psycopg2
+import subprocess
 from pathlib import Path
 from datetime import datetime, timedelta
 from dotenv import load_dotenv
-from os.path import expanduser
 
 from airflow import DAG
 from airflow.operators.python import PythonOperator
-from airflow.operators.bash import BashOperator
 
 # --------------------------------------------------
 # Default DAG args
@@ -24,13 +23,8 @@ default_args = {
 # --------------------------------------------------
 # Dynamic Path Configuration
 # --------------------------------------------------
-# Gets the folder where this DAG file is located (e.g., /opt/airflow/dags)
 DAG_FOLDER = os.path.dirname(os.path.abspath(__file__))
-
-# Update paths to be relative to the DAG folder
 ANSIBLE_BASE = os.path.join(DAG_FOLDER, "ansible")
-roles_path = os.path.join(ANSIBLE_BASE, "roles") 
-INVENTORY_PATH = os.path.join(ANSIBLE_BASE, "inventory/hosts.ini")
 SSH_KEY_PATH = os.path.join(DAG_FOLDER, ".ssh/id_rsa")
 ENV_PATH = os.path.join(DAG_FOLDER, ".env")
 
@@ -42,9 +36,8 @@ def fetch_cluster_info(**context):
     if not resource_id:
         raise ValueError("resource_id missing")
 
-    # --- FIX: Use dynamic ENV_PATH ---
     load_dotenv(ENV_PATH)
-
+    
     conn = psycopg2.connect(
         user=os.getenv("DB_USER"),
         password=os.getenv("DB_PASSWORD"),
@@ -54,57 +47,49 @@ def fetch_cluster_info(**context):
     )
     cur = conn.cursor()
 
-    cur.execute(
-        'SELECT "resourceConfigId" FROM "Resources" WHERE id = %s;',
-        (resource_id,),
-    )
+    # Get resource config ID
+    cur.execute('SELECT "resourceConfigId" FROM "Resources" WHERE id = %s;', (resource_id,))
     res = cur.fetchone()
-    if not res:
-        raise ValueError("Resource not found")
-
+    if not res: raise ValueError("Resource not found")
     resource_config_id = res[0]
 
+    # Get all clusters associated with this config
     cur.execute(
-        '''
-        SELECT "id", "clusterName", "clusterEndpoint", "terraformState"
-        FROM "AwsK8sCluster"
-        WHERE "resourceConfigId" = %s;
-        ''',
-        (resource_config_id,),
+        '''SELECT "id", "clusterName", "clusterEndpoint", "terraformState"
+           FROM "AwsK8sCluster" WHERE "resourceConfigId" = %s;''',
+        (resource_config_id,)
     )
-    clusters = cur.fetchall()
-
+    rows = cur.fetchall()
     cur.close()
     conn.close()
 
-    if not clusters:
-        raise ValueError("No clusters found")
+    if not rows: raise ValueError("No clusters found")
 
-    cluster_data = []
+    clusters_data = []
 
-    for cid, name, endpoint, tf_state in clusters:
-        if isinstance(endpoint, str):
-            endpoint = json.loads(endpoint) if endpoint else {}
-        elif endpoint is None:
-            endpoint = {}
-        
-        if isinstance(tf_state, str):
-            tf_state = json.loads(tf_state) if tf_state else {}
-        elif tf_state is None:
-            tf_state = {}
+    for cid, name, endpoint, tf_state in rows:
+        # Parse JSON
+        endpoint = endpoint if isinstance(endpoint, dict) else (json.loads(endpoint) if endpoint else {})
+        tf_state = tf_state if isinstance(tf_state, dict) else (json.loads(tf_state) if tf_state else {})
 
         workers = []
         edge = None
 
+        # Extract resources from Terraform State
         for r in tf_state.get("resources", []):
             if r.get("type") == "aws_instance":
-                if r.get("name") == "k3s_worker":
-                    for i in r.get("instances", []):
-                        workers.append(i["attributes"])
+                # Find Shared Edge Node
                 if r.get("name") == "k3s_edge":
                     edge = r["instances"][0]["attributes"]
+                
+                # Find Workers belonging to THIS specific cluster (using Tag filtering)
+                if r.get("name") == "k3s_worker":
+                    for i in r.get("instances", []):
+                        # Only add worker if it belongs to this cluster ID
+                        if i["attributes"]["tags"].get("ClusterId") == str(cid):
+                            workers.append(i["attributes"])
 
-        cluster_data.append({
+        clusters_data.append({
             "cluster_id": cid,
             "cluster_name": name,
             "master": endpoint,
@@ -112,91 +97,73 @@ def fetch_cluster_info(**context):
             "edge": edge,
         })
 
-    return cluster_data
-
+    return clusters_data
 
 # --------------------------------------------------
-# Step 2: Generate Ansible inventory
+# Step 2: Configure Clusters (Looping Logic)
 # --------------------------------------------------
-def generate_inventory(**context):
+def configure_clusters(**context):
     clusters = context["ti"].xcom_pull(task_ids="fetch_cluster_info")
+    
+    # Iterate over every cluster and run Ansible sequentially
+    for cluster in clusters:
+        print(f"--- Configuring Cluster: {cluster['cluster_name']} ---")
+        
+        # 1. Generate Unique Inventory for this Cluster
+        safe_name = cluster['cluster_name'].replace(" ", "-").lower()
+        inventory_path = f"/tmp/hosts_{safe_name}.ini"
+        
+        lines = ["[k3s_master]"]
+        lines.append(f"master ansible_host={cluster['master']['public_ip']} ansible_user=ubuntu ansible_ssh_private_key_file={SSH_KEY_PATH}")
+        
+        lines.append("\n[k3s_workers]")
+        for idx, w in enumerate(cluster['workers']):
+            lines.append(f"worker{idx+1} ansible_host={w['public_ip']} ansible_user=ubuntu ansible_ssh_private_key_file={SSH_KEY_PATH}")
+        
+        lines.append("\n[edge]")
+        if cluster['edge']:
+            lines.append(f"edge ansible_host={cluster['edge']['public_ip']} ansible_user=ubuntu ansible_ssh_private_key_file={SSH_KEY_PATH}")
 
-    inventory_dir = os.path.dirname(INVENTORY_PATH)
-    try:
-        os.makedirs(inventory_dir, mode=0o755, exist_ok=True)
-    except PermissionError:
-        temp_base = "/tmp/ansible"
-        inventory_dir = f"{temp_base}/inventory"
-        os.makedirs(inventory_dir, mode=0o755, exist_ok=True)
-        inventory_path = f"{inventory_dir}/hosts.ini"
-        print(f"Warning: Using temp directory {inventory_path}")
-    else:
-        inventory_path = INVENTORY_PATH
+        # --- IMPORTANT: Variables for Dynamic Routing ---
+        lines.append("\n[all:vars]")
+        lines.append(f"cluster_name={safe_name}")
+        lines.append(f"cluster_domain={safe_name}.orchestronic.dev") # <--- Generates unique domain
+        
+        with open(inventory_path, "w") as f:
+            f.write("\n".join(lines))
+        
+        print(f"Generated inventory: {inventory_path}")
 
-    lines = ["[k3s_master]"]
-    master = clusters[0]["master"]
+        # 2. Run Ansible Playbooks using Subprocess
+        env = os.environ.copy()
+        env["ANSIBLE_HOST_KEY_CHECKING"] = "False"
+        env["ANSIBLE_ROLES_PATH"] = os.path.join(ANSIBLE_BASE, "roles")
+        env["ANSIBLE_PRIVATE_KEY_FILE"] = SSH_KEY_PATH
 
-    # Injecting SSH_KEY_PATH dynamically
-    lines.append(
-        f"master ansible_host={master['public_ip']} ansible_user=ubuntu ansible_ssh_private_key_file={SSH_KEY_PATH}"
-    )
+        playbooks = ["master.yml", "worker.yml", "edge.yml"]
+        
+        for pb in playbooks:
+            pb_path = os.path.join(ANSIBLE_BASE, "playbooks", pb)
+            cmd = ["ansible-playbook", "-i", inventory_path, pb_path]
+            
+            print(f"Running playbook: {pb} for {cluster['cluster_name']}")
+            result = subprocess.run(cmd, env=env, cwd=ANSIBLE_BASE, capture_output=True, text=True)
+            
+            if result.returncode != 0:
+                print(f"ERROR in {pb}:\n{result.stderr}")
+                raise RuntimeError(f"Ansible failed for {cluster['cluster_name']}")
+            else:
+                print(f"SUCCESS: {pb}")
 
-    lines.append("\n[k3s_workers]")
-    for idx, w in enumerate(clusters[0]["workers"]):
-        lines.append(
-            f"worker{idx+1} ansible_host={w['public_ip']} ansible_user=ubuntu ansible_ssh_private_key_file={SSH_KEY_PATH}"
-        )
-
-    lines.append("\n[edge]")
-    edge = clusters[0]["edge"]
-    if edge:
-        lines.append(
-            f"edge ansible_host={edge['public_ip']} ansible_user=ubuntu ansible_ssh_private_key_file={SSH_KEY_PATH}"
-        )
-
-    with open(inventory_path, "w") as f:
-        f.write("\n".join(lines))
-
-    print(f"Inventory file created at: {inventory_path}")
-    return inventory_path
-
+    print("All clusters configured successfully.")
 
 # --------------------------------------------------
-# Step 3: Fetch kubeconfig & store in DB
+# Step 3: Fetch Kubeconfigs (Looping Logic)
 # --------------------------------------------------
-def fetch_kubeconfig(**context):
+def fetch_kubeconfigs(**context):
     clusters = context["ti"].xcom_pull(task_ids="fetch_cluster_info")
-    master_ip = clusters[0]["master"]["public_ip"]
-
-    # --- FIX: Use dynamic ENV_PATH ---
     load_dotenv(ENV_PATH)
-
-    # --- FIX: Use dynamic path for temp file ---
-    kubeconfig_path = os.path.join(DAG_FOLDER, "tmp_kubeconfig")
-
-    # --- FIX: Use dynamic SSH_KEY_PATH variable ---
-    cmd = (
-        f"ssh -o StrictHostKeyChecking=no "
-        f"-i {SSH_KEY_PATH} "
-        f"ubuntu@{master_ip} "
-        f"'cat /home/ubuntu/.kube/config' > {kubeconfig_path}"
-    )
-    print(f"Executing: {cmd}")
     
-    result = os.system(cmd)
-    
-    if result != 0:
-        raise RuntimeError(f"Failed to fetch kubeconfig from master node {master_ip}")
-
-    if not os.path.exists(kubeconfig_path):
-        raise RuntimeError(f"Kubeconfig file not created at {kubeconfig_path}")
-
-    with open(kubeconfig_path) as f:
-        kubeconfig = f.read()
-
-    if not kubeconfig.strip():
-        raise RuntimeError("Kubeconfig is empty")
-
     conn = psycopg2.connect(
         user=os.getenv("DB_USER"),
         password=os.getenv("DB_PASSWORD"),
@@ -206,25 +173,37 @@ def fetch_kubeconfig(**context):
     )
     cur = conn.cursor()
 
-    cur.execute(
-        '''
-        UPDATE "AwsK8sCluster"
-        SET "kubeConfig" = %s
-        WHERE id = %s;
-        ''',
-        (kubeconfig, clusters[0]["cluster_id"]),
-    )
+    for cluster in clusters:
+        master_ip = cluster["master"]["public_ip"]
+        cluster_id = cluster["cluster_id"]
+        safe_name = cluster['cluster_name'].replace(" ", "-").lower()
+        temp_kube_path = f"/tmp/kubeconfig_{safe_name}"
 
-    conn.commit()
+        cmd = (
+            f"ssh -o StrictHostKeyChecking=no -i {SSH_KEY_PATH} "
+            f"ubuntu@{master_ip} 'cat /home/ubuntu/.kube/config' > {temp_kube_path}"
+        )
+        
+        if os.system(cmd) != 0:
+            print(f"Failed to fetch kubeconfig for {cluster['cluster_name']}")
+            continue
+
+        with open(temp_kube_path) as f:
+            kubeconfig = f.read()
+
+        if kubeconfig.strip():
+            cur.execute(
+                'UPDATE "AwsK8sCluster" SET "kubeConfig" = %s WHERE id = %s;',
+                (kubeconfig, cluster_id),
+            )
+            conn.commit()
+            print(f"Updated DB for {cluster['cluster_name']}")
+            
+        if os.path.exists(temp_kube_path):
+            os.remove(temp_kube_path)
+
     cur.close()
     conn.close()
-    
-    # Cleanup temp file
-    if os.path.exists(kubeconfig_path):
-        os.remove(kubeconfig_path)
-
-    print(f"Kubeconfig successfully stored for cluster {clusters[0]['cluster_id']}")
-
 
 # --------------------------------------------------
 # DAG Definition
@@ -234,7 +213,7 @@ with DAG(
     default_args=default_args,
     schedule_interval=None,
     catchup=False,
-    description="Configure K3s cluster using Ansible",
+    description="Configure K3s clusters dynamically",
 ) as dag:
 
     fetch_info = PythonOperator(
@@ -242,45 +221,14 @@ with DAG(
         python_callable=fetch_cluster_info,
     )
 
-    write_inventory = PythonOperator(
-        task_id="generate_ansible_inventory",
-        python_callable=generate_inventory,
+    configure_all = PythonOperator(
+        task_id="configure_clusters",
+        python_callable=configure_clusters,
     )
 
-    # Added ANSIBLE_PRIVATE_KEY_FILE export to force override ansible.cfg
-    ansible_master = BashOperator(
-        task_id="ansible_master",
-        bash_command=f"""
-        export ANSIBLE_ROLES_PATH={roles_path} && \
-        export ANSIBLE_PRIVATE_KEY_FILE={SSH_KEY_PATH} && \
-        cd {ANSIBLE_BASE} && \
-        ansible-playbook -i {{{{ ti.xcom_pull(task_ids='generate_ansible_inventory') }}}} playbooks/master.yml
-        """,
+    store_configs = PythonOperator(
+        task_id="store_kubeconfigs",
+        python_callable=fetch_kubeconfigs,
     )
 
-    ansible_worker = BashOperator(
-        task_id="ansible_worker",
-        bash_command=f"""
-        export ANSIBLE_ROLES_PATH={roles_path} && \
-        export ANSIBLE_PRIVATE_KEY_FILE={SSH_KEY_PATH} && \
-        cd {ANSIBLE_BASE} && \
-        ansible-playbook -i {{{{ ti.xcom_pull(task_ids='generate_ansible_inventory') }}}} playbooks/worker.yml
-        """,
-    )
-
-    ansible_edge = BashOperator(
-        task_id="ansible_edge",
-        bash_command=f"""
-        export ANSIBLE_ROLES_PATH={roles_path} && \
-        export ANSIBLE_PRIVATE_KEY_FILE={SSH_KEY_PATH} && \
-        cd {ANSIBLE_BASE} && \
-        ansible-playbook -i {{{{ ti.xcom_pull(task_ids='generate_ansible_inventory') }}}} playbooks/edge.yml
-        """,
-    )
-
-    store_kubeconfig = PythonOperator(
-        task_id="fetch_kubeconfig",
-        python_callable=fetch_kubeconfig,
-    )
-
-    fetch_info >> write_inventory >> ansible_master >> ansible_worker >> ansible_edge >> store_kubeconfig
+    fetch_info >> configure_all >> store_configs
