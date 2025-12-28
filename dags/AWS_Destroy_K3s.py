@@ -13,7 +13,6 @@ from os.path import expanduser
 
 load_dotenv(expanduser('/opt/airflow/dags/.env'))
 
-
 # -------------------------
 # Default DAG args
 # -------------------------
@@ -23,6 +22,19 @@ default_args = {
     'start_date': datetime(2025, 1, 1),
     'retries': 1,
 }
+
+# -------------------------
+# DB Connection Helper
+# -------------------------
+def get_db_connection():
+    load_dotenv(expanduser('/opt/airflow/dags/.env'))
+    return psycopg2.connect(
+        user=os.getenv("DB_USER"),
+        password=os.getenv("DB_PASSWORD"),
+        host=os.getenv("DB_HOST"),
+        port=os.getenv("DB_PORT"),
+        dbname=os.getenv("DB_NAME"),
+    )
 
 # -------------------------
 # Step 1: RabbitMQ consumer
@@ -36,13 +48,13 @@ def rabbitmq_consumer():
     connection = pika.BlockingConnection(pika.URLParameters(rabbit_url))
     channel = connection.channel()
 
-    # Queue name kept as-is (current producer uses destroyK8s)
+    # Consumes from 'destroyK8s' queue
     method_frame, header_frame, body = channel.basic_get(queue='destroyK8s', auto_ack=True)
     if method_frame:
         message = body.decode()
         obj = json.loads(message)
         resource_id = obj["data"]["resourceId"]
-        print(f"[x] Got message: {resource_id}")
+        print(f"[x] Got message to destroy resource: {resource_id}")
         connection.close()
         return resource_id
     else:
@@ -51,26 +63,16 @@ def rabbitmq_consumer():
         return None
 
 # -------------------------
-# Step 2: Get repository/project name
+# Step 2: Get repository name (Project Name)
 # -------------------------
-def repository_name(resource_id):
-    load_dotenv(expanduser('/opt/airflow/dags/.env'))
-
-    USER = os.getenv("DB_USER")
-    PASSWORD = os.getenv("DB_PASSWORD")
-    HOST = os.getenv("DB_HOST")
-    PORT = os.getenv("DB_PORT")
-    DBNAME = os.getenv("DB_NAME")
-
-    connection = psycopg2.connect(
-        user=USER,
-        password=PASSWORD,
-        host=HOST,
-        port=PORT,
-        dbname=DBNAME,
-    )
+def get_repository_name(resource_id):
+    if not resource_id:
+        raise ValueError("No resource ID provided")
+        
+    connection = get_db_connection()
     cursor = connection.cursor()
     try:
+        # Matches logic in AWS_Resources_Cluster.py
         cursor.execute('SELECT "name" FROM "Resources" WHERE id = %s;', (resource_id,))
         res = cursor.fetchone()
         if not res:
@@ -81,125 +83,91 @@ def repository_name(resource_id):
         connection.close()
 
 # -------------------------
-# Step 3: Check if K3s clusters exist
+# Step 3: Check if K3s clusters exist (Branching)
 # -------------------------
 def check_k3s_clusters(resource_id):
-    load_dotenv(expanduser('/opt/airflow/dags/.env'))
-
-    USER = os.getenv("DB_USER")
-    PASSWORD = os.getenv("DB_PASSWORD")
-    HOST = os.getenv("DB_HOST")
-    PORT = os.getenv("DB_PORT")
-    DBNAME = os.getenv("DB_NAME")
-
-    connection = psycopg2.connect(
-        user=USER,
-        password=PASSWORD,
-        host=HOST,
-        port=PORT,
-        dbname=DBNAME,
-    )
+    connection = get_db_connection()
     cursor = connection.cursor()
     try:
         # Get resourceConfigId
-        cursor.execute(
-            'SELECT "resourceConfigId" FROM "Resources" WHERE id = %s;',
-            (resource_id,)
-        )
+        cursor.execute('SELECT "resourceConfigId" FROM "Resources" WHERE id = %s;', (resource_id,))
         res = cursor.fetchone()
         if not res:
-            raise ValueError(f"No resource found for id={resource_id}")
+            print(f"Resource {resource_id} not found, checking if cleanup is still possible...")
+            return 'skip_destroy_k3s'
+        
         resourceConfigId = res[0]
 
         # Check for K3s clusters
-        cursor.execute(
-            'SELECT id FROM "AwsK8sCluster" WHERE "resourceConfigId" = %s;',
-            (resourceConfigId,)
-        )
+        cursor.execute('SELECT id FROM "AwsK8sCluster" WHERE "resourceConfigId" = %s;', (resourceConfigId,))
         k3s_instances = cursor.fetchall()
-        k3s_count = len(k3s_instances)
-
-        cursor.close()
-        connection.close()
-
-        if k3s_count > 0:
+        
+        if len(k3s_instances) > 0:
             return 'terraform_destroy_k3s'
         else:
-            return 'skip_destroy'
+            return 'skip_destroy_k3s'
     finally:
         cursor.close()
         connection.close()
 
 # -------------------------
-# Step 4: Cleanup folder
+# Step 6: Cleanup directories
 # -------------------------
-def cleanup_directory(projectName):
-    directory_path = f"/opt/airflow/dags/terraform/{projectName}/k3s"
-    if os.path.exists(directory_path):
-        shutil.rmtree(directory_path)
-    return projectName
+def cleanup_directories(repoName):
+    base_path = f"/opt/airflow/dags/terraform/{repoName}"
+    k3s_path = os.path.join(base_path, "k3s")
+    rg_path = os.path.join(base_path, "rg")
 
-def cleanup_rg_directory(projectName):
-    directory_path = f"/opt/airflow/dags/terraform/{projectName}/rg"
-    if os.path.exists(directory_path):
-        shutil.rmtree(directory_path)
-    return projectName
+    # Remove K3s dir
+    if os.path.exists(k3s_path):
+        shutil.rmtree(k3s_path)
+        print(f"Removed directory: {k3s_path}")
+    
+    # Remove RG dir
+    if os.path.exists(rg_path):
+        shutil.rmtree(rg_path)
+        print(f"Removed directory: {rg_path}")
+
+    # Clean up parent if empty
+    if os.path.exists(base_path) and not os.listdir(base_path):
+        os.rmdir(base_path)
+        print(f"Removed empty parent directory: {base_path}")
+        
+    return repoName
 
 # -------------------------
-# Step 5: Delete database records
+# Step 7: Delete database records
 # -------------------------
 def supabase_delete_resource(resource_id):
-    load_dotenv(expanduser('/opt/airflow/dags/.env'))
-
-    USER = os.getenv("DB_USER")
-    PASSWORD = os.getenv("DB_PASSWORD")
-    HOST = os.getenv("DB_HOST")
-    PORT = os.getenv("DB_PORT")
-    DBNAME = os.getenv("DB_NAME")
-
-    connection = psycopg2.connect(
-        user=USER,
-        password=PASSWORD,
-        host=HOST,
-        port=PORT,
-        dbname=DBNAME,
-    )
+    connection = get_db_connection()
     cursor = connection.cursor()
     try:
         # Get resourceConfigId
-        cursor.execute(
-            'SELECT "resourceConfigId" FROM "Resources" WHERE id = %s;',
-            (resource_id,)
-        )
+        cursor.execute('SELECT "resourceConfigId" FROM "Resources" WHERE id = %s;', (resource_id,))
         res = cursor.fetchone()
-        if not res:
-            raise ValueError(f"No resource found for id={resource_id}")
-        resourceConfigId = res[0]
+        
+        if res:
+            resourceConfigId = res[0]
 
-        # Delete K3s clusters
-        cursor.execute(
-            'DELETE FROM "AwsK8sCluster" WHERE "resourceConfigId" = %s;',
-            (resourceConfigId,)
-        )
-        connection.commit()
-        print(f"Deleted AwsK8sCluster with resourceConfigId={resourceConfigId}")
+            # 1. Delete K3s clusters (Child records)
+            cursor.execute('DELETE FROM "AwsK8sCluster" WHERE "resourceConfigId" = %s;', (resourceConfigId,))
+            print(f"Deleted AwsK8sCluster records for config {resourceConfigId}")
 
-        # Delete resource
-        cursor.execute(
-            'DELETE FROM "Resources" WHERE id = %s;',
-            (resource_id,)
-        )
-        connection.commit()
-        print(f"Deleted Resources with id={resource_id}")
+            # 2. Delete Resource (Parent of K3s, Child of Config)
+            cursor.execute('DELETE FROM "Resources" WHERE id = %s;', (resource_id,))
+            print(f"Deleted Resources record {resource_id}")
 
-        # Delete ResourceConfig
-        cursor.execute(
-            'DELETE FROM "ResourceConfig" WHERE id = %s;',
-            (resourceConfigId,)
-        )
-        connection.commit()
-        print(f"Deleted ResourceConfig with id={resourceConfigId}")
+            # 3. Delete ResourceConfig (Root configuration)
+            cursor.execute('DELETE FROM "ResourceConfig" WHERE id = %s;', (resourceConfigId,))
+            print(f"Deleted ResourceConfig {resourceConfigId}")
+            
+            connection.commit()
+        else:
+            print(f"Resource {resource_id} not found in DB, assuming already deleted.")
 
+    except Exception as e:
+        connection.rollback()
+        raise e
     finally:
         cursor.close()
         connection.close()
@@ -215,87 +183,88 @@ with DAG(
     max_active_runs=1,
 ) as dag:
 
-    # Step 1: Get resource ID from RabbitMQ
+    # 1. Receive Message
     get_resource_id = PythonOperator(
         task_id="get_resource_id",
         python_callable=rabbitmq_consumer,
     )
 
-    # Step 2: Get repository/project name
-    get_repository_name = PythonOperator(
+    # 2. Identify Project/Repo
+    get_repository_name_task = PythonOperator(
         task_id="get_repository_name",
-        python_callable=repository_name,
+        python_callable=get_repository_name,
         op_args=["{{ ti.xcom_pull(task_ids='get_resource_id') }}"],
     )
 
-    # Step 3: Check if K3s clusters exist
-    branch_task = BranchPythonOperator(
+    # 3. Branch: Do we have K3s clusters to destroy?
+    check_clusters = BranchPythonOperator(
         task_id='check_k3s_clusters',
         python_callable=check_k3s_clusters,
         op_args=["{{ ti.xcom_pull(task_ids='get_resource_id') }}"],
-        retries=3,
-        retry_delay=timedelta(minutes=5)
     )
 
-    skip_destroy = EmptyOperator(task_id="skip_destroy")
+    skip_destroy_k3s = EmptyOperator(task_id="skip_destroy_k3s")
 
-    # Step 4: Destroy K3s infrastructure
+    # 4. Destroy Compute Layer (K3s VMs, SGs, IAM)
+    # MUST run before Network layer because VMs depend on VPC/Subnets
     destroy_k3s = BashOperator(
         task_id="terraform_destroy_k3s",
         bash_command=(
-            'TF_DIR="/opt/airflow/dags/terraform/{{ ti.xcom_pull(task_ids=\'get_repository_name\') | trim | replace(\'"\',\'\') }}/k3s"; '
-            'if [ -d "$TF_DIR" ]; then cd "$TF_DIR" && terraform init -input=false && terraform destroy -auto-approve -input=false; '
-            'else echo "[x] No k3s terraform dir: $TF_DIR"; fi'
+            'TF_DIR="/opt/airflow/dags/terraform/{{ ti.xcom_pull(task_ids=\'get_repository_name\') }}/k3s"; '
+            'if [ -d "$TF_DIR" ]; then '
+            '   cd "$TF_DIR" && terraform init -input=false && terraform destroy -auto-approve -input=false; '
+            'else '
+            '   echo "[x] Directory $TF_DIR does not exist, skipping K3s destroy."; '
+            'fi'
         ),
         retries=3,
-        retry_delay=timedelta(minutes=5)
+        retry_delay=timedelta(minutes=2)
     )
 
-    # Destroy shared VPC (created by AWS_Resources_Cluster in /rg)
+    # 5. Destroy Network Layer (VPC, Subnets, IGW)
     destroy_rg = BashOperator(
         task_id="terraform_destroy_rg",
         bash_command=(
-            'TF_DIR="/opt/airflow/dags/terraform/{{ ti.xcom_pull(task_ids=\'get_repository_name\') | trim | replace(\'"\',\'\') }}/rg"; '
-            'if [ -d "$TF_DIR" ]; then cd "$TF_DIR" && terraform init -input=false && terraform destroy -auto-approve -input=false; '
-            'else echo "[x] No rg terraform dir: $TF_DIR"; fi'
+            'TF_DIR="/opt/airflow/dags/terraform/{{ ti.xcom_pull(task_ids=\'get_repository_name\') }}/rg"; '
+            'if [ -d "$TF_DIR" ]; then '
+            '   cd "$TF_DIR" && terraform init -input=false && terraform destroy -auto-approve -input=false; '
+            'else '
+            '   echo "[x] Directory $TF_DIR does not exist, skipping RG destroy."; '
+            'fi'
         ),
+        trigger_rule='all_success', # Only run if K3s destroy (or skip) succeeded
         retries=3,
-        retry_delay=timedelta(minutes=5)
+        retry_delay=timedelta(minutes=2)
     )
 
-    # Step 5: Cleanup folder
-    cleanup_dir = PythonOperator(
-        task_id="cleanup_dir",
-        python_callable=cleanup_directory,
+    # 6. Cleanup File System
+    cleanup_fs = PythonOperator(
+        task_id="cleanup_directories",
+        python_callable=cleanup_directories,
         op_args=["{{ ti.xcom_pull(task_ids='get_repository_name') }}"],
-        trigger_rule='all_done',
+        trigger_rule='all_done', # Run even if terraform failed slightly, to ensure we try to clean up
     )
 
-    cleanup_rg_dir = PythonOperator(
-        task_id="cleanup_rg_dir",
-        python_callable=cleanup_rg_directory,
-        op_args=["{{ ti.xcom_pull(task_ids='get_repository_name') }}"],
-        trigger_rule='all_done',
-    )
-
-    # Step 6: Delete database records
-    delete_resource = PythonOperator(
+    # 7. Delete DB Records
+    delete_db_records = PythonOperator(
         task_id='supabase_delete_resource',
         python_callable=supabase_delete_resource,
         op_args=["{{ ti.xcom_pull(task_ids='get_resource_id') }}"],
-        trigger_rule='all_done',
+        trigger_rule='all_success', # Only delete DB if FS cleanup didn't crash hard
         retries=3,
-        retry_delay=timedelta(minutes=5)
+        retry_delay=timedelta(minutes=1)
     )
 
     end = EmptyOperator(task_id="end")
 
-    get_resource_id >> get_repository_name >> branch_task
-    branch_task >> destroy_k3s
-    branch_task >> skip_destroy
-
-    # Always attempt to destroy shared networking after either branch
+    # Flow
+    get_resource_id >> get_repository_name_task >> check_clusters
+    
+    check_clusters >> destroy_k3s
+    check_clusters >> skip_destroy_k3s
+    
+    # Network destroy runs after Compute destroy (or skip)
     destroy_k3s >> destroy_rg
-    skip_destroy >> destroy_rg
-
-    destroy_rg >> cleanup_dir >> cleanup_rg_dir >> delete_resource >> end
+    skip_destroy_k3s >> destroy_rg
+    
+    destroy_rg >> cleanup_fs >> delete_db_records >> end
