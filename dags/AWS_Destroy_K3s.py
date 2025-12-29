@@ -4,7 +4,7 @@ import pika
 import psycopg2
 import shutil
 from airflow import DAG
-from airflow.operators.python import PythonOperator, BranchPythonOperator
+from airflow.operators.python import PythonOperator
 from airflow.operators.bash import BashOperator
 from airflow.operators.empty import EmptyOperator
 from datetime import datetime, timedelta
@@ -72,46 +72,20 @@ def get_repository_name(resource_id):
     connection = get_db_connection()
     cursor = connection.cursor()
     try:
-        # Matches logic in AWS_Resources_Cluster.py
         cursor.execute('SELECT "name" FROM "Resources" WHERE id = %s;', (resource_id,))
         res = cursor.fetchone()
         if not res:
-            raise ValueError(f"No resource found for id={resource_id}")
+            # If resource is missing from DB, we still need the name to clean up AWS.
+            # This is a critical failure point if the DB is desynced.
+            # For now, we raise, but in production, you might want to pass the repoName in the RabbitMQ payload.
+            raise ValueError(f"No resource found for id={resource_id}. Cannot determine Terraform path.")
         return res[0]
     finally:
         cursor.close()
         connection.close()
 
 # -------------------------
-# Step 3: Check if K3s clusters exist (Branching)
-# -------------------------
-def check_k3s_clusters(resource_id):
-    connection = get_db_connection()
-    cursor = connection.cursor()
-    try:
-        # Get resourceConfigId
-        cursor.execute('SELECT "resourceConfigId" FROM "Resources" WHERE id = %s;', (resource_id,))
-        res = cursor.fetchone()
-        if not res:
-            print(f"Resource {resource_id} not found, checking if cleanup is still possible...")
-            return 'skip_destroy_k3s'
-        
-        resourceConfigId = res[0]
-
-        # Check for K3s clusters
-        cursor.execute('SELECT id FROM "AwsK8sCluster" WHERE "resourceConfigId" = %s;', (resourceConfigId,))
-        k3s_instances = cursor.fetchall()
-        
-        if len(k3s_instances) > 0:
-            return 'terraform_destroy_k3s'
-        else:
-            return 'skip_destroy_k3s'
-    finally:
-        cursor.close()
-        connection.close()
-
-# -------------------------
-# Step 6: Cleanup directories
+# Step 3: Cleanup directories
 # -------------------------
 def cleanup_directories(repoName):
     base_path = f"/opt/airflow/dags/terraform/{repoName}"
@@ -136,34 +110,33 @@ def cleanup_directories(repoName):
     return repoName
 
 # -------------------------
-# Step 7: Delete database records
+# Step 4: Delete database records
 # -------------------------
 def supabase_delete_resource(resource_id):
     connection = get_db_connection()
     cursor = connection.cursor()
     try:
-        # Get resourceConfigId
+        # Get resourceConfigId before deleting the Resource
         cursor.execute('SELECT "resourceConfigId" FROM "Resources" WHERE id = %s;', (resource_id,))
         res = cursor.fetchone()
         
-        if res:
-            resourceConfigId = res[0]
+        resourceConfigId = res[0] if res else None
 
-            # 1. Delete K3s clusters (Child records)
+        # 1. Delete K3s clusters (Child records)
+        if resourceConfigId:
             cursor.execute('DELETE FROM "AwsK8sCluster" WHERE "resourceConfigId" = %s;', (resourceConfigId,))
             print(f"Deleted AwsK8sCluster records for config {resourceConfigId}")
 
-            # 2. Delete Resource (Parent of K3s, Child of Config)
-            cursor.execute('DELETE FROM "Resources" WHERE id = %s;', (resource_id,))
-            print(f"Deleted Resources record {resource_id}")
+        # 2. Delete Resource (Parent of K3s, Child of Config)
+        cursor.execute('DELETE FROM "Resources" WHERE id = %s;', (resource_id,))
+        print(f"Deleted Resources record {resource_id}")
 
-            # 3. Delete ResourceConfig (Root configuration)
+        # 3. Delete ResourceConfig (Root configuration)
+        if resourceConfigId:
             cursor.execute('DELETE FROM "ResourceConfig" WHERE id = %s;', (resourceConfigId,))
             print(f"Deleted ResourceConfig {resourceConfigId}")
             
-            connection.commit()
-        else:
-            print(f"Resource {resource_id} not found in DB, assuming already deleted.")
+        connection.commit()
 
     except Exception as e:
         connection.rollback()
@@ -196,75 +169,67 @@ with DAG(
         op_args=["{{ ti.xcom_pull(task_ids='get_resource_id') }}"],
     )
 
-    # 3. Branch: Do we have K3s clusters to destroy?
-    check_clusters = BranchPythonOperator(
-        task_id='check_k3s_clusters',
-        python_callable=check_k3s_clusters,
-        op_args=["{{ ti.xcom_pull(task_ids='get_resource_id') }}"],
-    )
-
-    skip_destroy_k3s = EmptyOperator(task_id="skip_destroy_k3s")
-
-    # 4. Destroy Compute Layer (K3s VMs, SGs, IAM)
-    # MUST run before Network layer because VMs depend on VPC/Subnets
+    # 3. Destroy Compute Layer (K3s VMs, SGs, IAM, KeyPairs)
+    # DEPENDENCY: Must run BEFORE network destroy.
+    # LOGIC: Checks if the directory exists. If yes, Terraform Destroy. If no, skip silently.
     destroy_k3s = BashOperator(
         task_id="terraform_destroy_k3s",
         bash_command=(
             'TF_DIR="/opt/airflow/dags/terraform/{{ ti.xcom_pull(task_ids=\'get_repository_name\') }}/k3s"; '
             'if [ -d "$TF_DIR" ]; then '
+            '   echo "Found K3s Terraform directory. Initiating destroy..."; '
             '   cd "$TF_DIR" && terraform init -input=false && terraform destroy -auto-approve -input=false; '
             'else '
-            '   echo "[x] Directory $TF_DIR does not exist, skipping K3s destroy."; '
+            '   echo "[!] Directory $TF_DIR does not exist. Skipping K3s destroy."; '
             'fi'
         ),
         retries=3,
-        retry_delay=timedelta(minutes=2)
+        retry_delay=timedelta(minutes=1)
     )
 
-    # 5. Destroy Network Layer (VPC, Subnets, IGW)
+    # 4. Destroy Network Layer (VPC, Subnets, IGW)
+    # DEPENDENCY: Runs only if `destroy_k3s` succeeded (or skipped successfully).
     destroy_rg = BashOperator(
         task_id="terraform_destroy_rg",
         bash_command=(
             'TF_DIR="/opt/airflow/dags/terraform/{{ ti.xcom_pull(task_ids=\'get_repository_name\') }}/rg"; '
             'if [ -d "$TF_DIR" ]; then '
+            '   echo "Found RG Terraform directory. Initiating destroy..."; '
             '   cd "$TF_DIR" && terraform init -input=false && terraform destroy -auto-approve -input=false; '
             'else '
-            '   echo "[x] Directory $TF_DIR does not exist, skipping RG destroy."; '
+            '   echo "[!] Directory $TF_DIR does not exist. Skipping RG destroy."; '
             'fi'
         ),
-        trigger_rule='all_success', # Only run if K3s destroy (or skip) succeeded
-        retries=3,
-        retry_delay=timedelta(minutes=2)
-    )
-
-    # 6. Cleanup File System
-    cleanup_fs = PythonOperator(
-        task_id="cleanup_directories",
-        python_callable=cleanup_directories,
-        op_args=["{{ ti.xcom_pull(task_ids='get_repository_name') }}"],
-        trigger_rule='all_done', # Run even if terraform failed slightly, to ensure we try to clean up
-    )
-
-    # 7. Delete DB Records
-    delete_db_records = PythonOperator(
-        task_id='supabase_delete_resource',
-        python_callable=supabase_delete_resource,
-        op_args=["{{ ti.xcom_pull(task_ids='get_resource_id') }}"],
-        trigger_rule='all_success', # Only delete DB if FS cleanup didn't crash hard
+        trigger_rule='all_success',
         retries=3,
         retry_delay=timedelta(minutes=1)
     )
 
+    # 5. Cleanup File System
+    cleanup_fs = PythonOperator(
+        task_id="cleanup_directories",
+        python_callable=cleanup_directories,
+        op_args=["{{ ti.xcom_pull(task_ids='get_repository_name') }}"],
+        trigger_rule='all_done', # Run cleanup even if terraform reported issues, to try and clear temp files
+    )
+
+    # 6. Delete DB Records
+    delete_db_records = PythonOperator(
+        task_id='supabase_delete_resource',
+        python_callable=supabase_delete_resource,
+        op_args=["{{ ti.xcom_pull(task_ids='get_resource_id') }}"],
+        trigger_rule='all_success',
+    )
+
     end = EmptyOperator(task_id="end")
 
-    # Flow
-    get_resource_id >> get_repository_name_task >> check_clusters
+    # -------------------------
+    # Workflow Logic
+    # -------------------------
     
-    check_clusters >> destroy_k3s
-    check_clusters >> skip_destroy_k3s
+    get_resource_id >> get_repository_name_task 
     
-    # Network destroy runs after Compute destroy (or skip)
-    destroy_k3s >> destroy_rg
-    skip_destroy_k3s >> destroy_rg
+    # Linear execution ensures dependencies are respected (Compute -> Network)
+    get_repository_name_task >> destroy_k3s >> destroy_rg 
     
     destroy_rg >> cleanup_fs >> delete_db_records >> end
