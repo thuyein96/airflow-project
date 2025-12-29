@@ -122,7 +122,7 @@ def configure_clusters(**context):
         
         lines.append("\n[edge]")
         if cluster['edge']:
-            lines.append(f"edge ansible_host={cluster['edge']['public_ip']} ansible_user=ubuntu ansible_ssh_private_key_file={SSH_KEY_PATH}")
+            lines.append(f"edge01 ansible_host={cluster['edge']['public_ip']} ansible_user=ubuntu ansible_ssh_private_key_file={SSH_KEY_PATH}")
 
         # --- IMPORTANT: Variables for Dynamic Routing ---
         lines.append("\n[all:vars]")
