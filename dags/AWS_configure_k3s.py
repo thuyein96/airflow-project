@@ -118,7 +118,7 @@ def configure_clusters(**context):
         
         lines.append("\n[k3s_workers]")
         for idx, w in enumerate(cluster['workers']):
-            lines.append(f"worker{idx+1} ansible_host={w['public_ip']} ansible_user=ubuntu ansible_ssh_private_key_file={SSH_KEY_PATH}")
+            lines.append(f"worker{idx+1} ansible_host={w['public_ip']} private_ip={w['private_ip']} ansible_user=ubuntu ansible_ssh_private_key_file={SSH_KEY_PATH}")        
         
         lines.append("\n[edge]")
         if cluster['edge']:
