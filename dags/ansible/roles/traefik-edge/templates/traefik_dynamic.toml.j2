@@ -1,7 +1,7 @@
 [tcp]
   # ----------------------------------------------------------------
   # HTTP Traffic (Port 80)
-  # Forward all traffic on Port 80 to the Workers' Port 80
+  # Forward all traffic on Port 80 to the Workers' NodePort 80
   # ----------------------------------------------------------------
   [tcp.routers.to-k3s-http]
     entryPoints = ["web"]
