@@ -26,5 +26,5 @@
   [tcp.services.k3s-workers-https.loadBalancer]
   {% for host in groups['k3s_workers'] %}
     [[tcp.services.k3s-workers-https.loadBalancer.servers]]
-      address = "{{ hostvars[host]['private_ip'] }}:80"
+      address = "{{ hostvars[host]['private_ip'] }}:443"
   {% endfor %}
