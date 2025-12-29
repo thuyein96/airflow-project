@@ -9,10 +9,10 @@
     service = "k3s-workers-http"
 
   [tcp.services.k3s-workers-http.loadBalancer]
+  {% for host in groups['k3s_workers'] %}
     [[tcp.services.k3s-workers-http.loadBalancer.servers]]
-    {% for host in groups['k3s_workers'] %}
-      address = "{{ hostvars[host]['ansible_host'] }}:80"
-    {% endfor %}
+      address = "{{ hostvars[host]['private_ip'] }}:80"
+  {% endfor %}
 
   # ----------------------------------------------------------------
   # HTTPS Traffic (Port 443)
@@ -24,7 +24,7 @@
     service = "k3s-workers-https"
 
   [tcp.services.k3s-workers-https.loadBalancer]
+  {% for host in groups['k3s_workers'] %}
     [[tcp.services.k3s-workers-https.loadBalancer.servers]]
-    {% for host in groups['k3s_workers'] %}
-      address = "{{ hostvars[host]['ansible_host'] }}:443"
-    {% endfor %}
+      address = "{{ hostvars[host]['private_ip'] }}:80"
+  {% endfor %}
