@@ -1,7 +1,6 @@
 [tcp]
   # ----------------------------------------------------------------
   # HTTP Traffic (Port 80)
-  # Forward all traffic on Port 80 to the Workers' NodePort 80
   # ----------------------------------------------------------------
   [tcp.routers.to-k3s-http]
     entryPoints = ["web"]
@@ -9,14 +8,15 @@
     service = "k3s-workers-http"
 
   [tcp.services.k3s-workers-http.loadBalancer]
-    [[tcp.services.k3s-workers-http.loadBalancer.servers]]
+    # FIX: Loop starts BEFORE the server block header
     {% for host in groups['k3s_workers'] %}
+    [[tcp.services.k3s-workers-http.loadBalancer.servers]]
+      # FIX: Changed port 30080 -> 80 (Standard K3s port)
       address = "{{ hostvars[host]['ansible_host'] }}:80"
     {% endfor %}
 
   # ----------------------------------------------------------------
   # HTTPS Traffic (Port 443)
-  # Forward all traffic on Port 443 to the Workers' Port 443
   # ----------------------------------------------------------------
   [tcp.routers.to-k3s-https]
     entryPoints = ["websecure"]
@@ -24,7 +24,9 @@
     service = "k3s-workers-https"
 
   [tcp.services.k3s-workers-https.loadBalancer]
-    [[tcp.services.k3s-workers-https.loadBalancer.servers]]
+    # FIX: Loop starts BEFORE the server block header
     {% for host in groups['k3s_workers'] %}
+    [[tcp.services.k3s-workers-https.loadBalancer.servers]]
+      # FIX: Changed port 30443 -> 443 (Standard K3s port)
       address = "{{ hostvars[host]['ansible_host'] }}:443"
     {% endfor %}
