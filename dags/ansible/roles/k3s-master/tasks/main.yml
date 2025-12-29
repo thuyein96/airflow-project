@@ -31,3 +31,6 @@
     cp /etc/rancher/k3s/k3s.yaml /home/ubuntu/.kube/config
     sed -i "s/127.0.0.1/{{ ansible_host }}/g" /home/ubuntu/.kube/config
     chown -R ubuntu:ubuntu /home/ubuntu/.kube
+
+- name: Install K3s Ingress Controller
+  include_tasks: ingress-controller.yml

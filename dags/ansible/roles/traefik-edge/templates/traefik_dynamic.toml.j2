@@ -1,9 +1,39 @@
+[http]
+  # ----------------------------------------------------------------
+  # HTTP Router - Routes based on Host header
+  # This will handle your ingress host: app.<proxy_ip>.nip.io
+  # ----------------------------------------------------------------
+  [http.routers.to-k3s-ingress]
+    entryPoints = ["web"]
+    rule = "Host(`{{ cluster_domain }}`) || HostRegexp(`{subdomain:.+}.{{ cluster_domain }}`)"
+    service = "k3s-ingress-http"
+
+  [http.services.k3s-ingress-http.loadBalancer]
+  {% for host in groups['k3s_workers'] %}
+    [[http.services.k3s-ingress-http.loadBalancer.servers]]
+      url = "http://{{ hostvars[host]['private_ip'] }}:80"
+  {% endfor %}
+
+  # ----------------------------------------------------------------
+  # HTTPS Router - Routes based on Host header (TLS termination)
+  # ----------------------------------------------------------------
+  [http.routers.to-k3s-ingress-secure]
+    entryPoints = ["websecure"]
+    rule = "Host(`{{ cluster_domain }}`) || HostRegexp(`{subdomain:.+}.{{ cluster_domain }}`)"
+    service = "k3s-ingress-https"
+    [http.routers.to-k3s-ingress-secure.tls]
+
+  [http.services.k3s-ingress-https.loadBalancer]
+  {% for host in groups['k3s_workers'] %}
+    [[http.services.k3s-ingress-https.loadBalancer.servers]]
+      url = "https://{{ hostvars[host]['private_ip'] }}:443"
+  {% endfor %}
+
 [tcp]
   # ----------------------------------------------------------------
-  # HTTP Traffic (Port 80)
-  # Forward all traffic on Port 80 to the Workers' NodePort 80
+  # Fallback TCP routing for direct NodePort access
   # ----------------------------------------------------------------
-  [tcp.routers.to-k3s-http]
+  [tcp.routers.to-k3s-nodeport-http]
     entryPoints = ["web"]
     rule = "HostSNI(`*`)"
     service = "k3s-workers-http"
@@ -11,14 +41,10 @@
   [tcp.services.k3s-workers-http.loadBalancer]
   {% for host in groups['k3s_workers'] %}
     [[tcp.services.k3s-workers-http.loadBalancer.servers]]
-      address = "{{ hostvars[host]['private_ip'] }}:80"
+      address = "{{ hostvars[host]['private_ip'] }}:30080"
   {% endfor %}
 
-  # ----------------------------------------------------------------
-  # HTTPS Traffic (Port 443)
-  # Forward all traffic on Port 443 to the Workers' Port 443
-  # ----------------------------------------------------------------
-  [tcp.routers.to-k3s-https]
+  [tcp.routers.to-k3s-nodeport-https]
     entryPoints = ["websecure"]
     rule = "HostSNI(`*`)"
     service = "k3s-workers-https"
@@ -26,5 +52,5 @@
   [tcp.services.k3s-workers-https.loadBalancer]
   {% for host in groups['k3s_workers'] %}
     [[tcp.services.k3s-workers-https.loadBalancer.servers]]
-      address = "{{ hostvars[host]['private_ip'] }}:443"
+      address = "{{ hostvars[host]['private_ip'] }}:30443"
   {% endfor %}
