@@ -125,7 +125,7 @@ def configure_clusters(**context):
         lines.append("\n[k3s_workers]")
         for idx, w in enumerate(cluster['workers']):
             lines.append(
-                f"worker{idx+1} ansible_host={w['private_ip']} ansible_user=ubuntu "
+                f"worker{idx+1} ansible_host={w['private_ip']} private_ip={w['private_ip']} ansible_user=ubuntu "
                 f"ansible_ssh_private_key_file={SSH_KEY_PATH} ansible_ssh_common_args='{proxyjump_arg}'"
             )
         
@@ -142,6 +142,7 @@ def configure_clusters(**context):
             f.write("\n".join(lines))
         
         print(f"Generated inventory: {inventory_path}")
+        print("Inventory content:\n" + "\n".join(lines))
 
         # 2. Run Ansible Playbooks using Subprocess
         env = os.environ.copy()
@@ -153,13 +154,19 @@ def configure_clusters(**context):
         
         for pb in playbooks:
             pb_path = os.path.join(ANSIBLE_BASE, "playbooks", pb)
-            cmd = ["ansible-playbook", "-i", inventory_path, pb_path]
+            cmd = ["ansible-playbook", "-vvv", "-i", inventory_path, pb_path]
             
             print(f"Running playbook: {pb} for {cluster['cluster_name']}")
             result = subprocess.run(cmd, env=env, cwd=ANSIBLE_BASE, capture_output=True, text=True)
             
             if result.returncode != 0:
-                print(f"ERROR in {pb}:\n{result.stderr}")
+                print(f"ERROR in {pb}")
+                print(f"Return code: {result.returncode}")
+                print(f"Command: {' '.join(cmd)}")
+                if result.stdout:
+                    print(f"STDOUT:\n{result.stdout}")
+                if result.stderr:
+                    print(f"STDERR:\n{result.stderr}")
                 raise RuntimeError(f"Ansible failed for {cluster['cluster_name']}")
             else:
                 print(f"SUCCESS: {pb}")

@@ -117,10 +117,10 @@ k3s_clusters     = {json.dumps(k3s_clusters, indent=4)}
     
     # Read SSH public key
     try:
-        with open('/opt/airflow/dags/.ssh/id_rsa.pub', 'r') as pub_key_file:
+        with open('/home/azureuser/airflow/dags/.ssh/id_rsa.pub', 'r') as pub_key_file:
             ssh_public_key = pub_key_file.read().strip()
     except FileNotFoundError:
-        raise ValueError("Public key not found at /opt/airflow/dags/.ssh/id_rsa.pub")
+        raise ValueError("Public key not found at /home/azureuser/airflow/dags/.ssh/id_rsa.pub")
 
     # main.tf - Infrastructure Only (No K3s installation)
     main_tf_template = """
