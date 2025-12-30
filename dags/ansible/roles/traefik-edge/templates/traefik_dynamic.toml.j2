@@ -5,13 +5,13 @@
   # ----------------------------------------------------------------
   [http.routers.to-k3s-ingress]
     entryPoints = ["web"]
-    rule = "Host(`{{ cluster_domain }}`) || HostRegexp(`{subdomain:.+}.{{ cluster_domain }}`)"
+    rule = "HostRegexp(`{host:.+}.nip.io`)"
     service = "k3s-ingress-http"
 
   [http.services.k3s-ingress-http.loadBalancer]
   {% for host in groups['k3s_workers'] %}
     [[http.services.k3s-ingress-http.loadBalancer.servers]]
-      url = "http://{{ hostvars[host]['private_ip'] }}:80"
+      url = "http://{{ hostvars[host]['private_ip'] }}:30080"
   {% endfor %}
 
   # ----------------------------------------------------------------
@@ -19,14 +19,14 @@
   # ----------------------------------------------------------------
   [http.routers.to-k3s-ingress-secure]
     entryPoints = ["websecure"]
-    rule = "Host(`{{ cluster_domain }}`) || HostRegexp(`{subdomain:.+}.{{ cluster_domain }}`)"
+    rule = "HostRegexp(`{host:.+}.nip.io`)"
     service = "k3s-ingress-https"
     [http.routers.to-k3s-ingress-secure.tls]
 
   [http.services.k3s-ingress-https.loadBalancer]
   {% for host in groups['k3s_workers'] %}
     [[http.services.k3s-ingress-https.loadBalancer.servers]]
-      url = "https://{{ hostvars[host]['private_ip'] }}:443"
+      url = "https://{{ hostvars[host]['private_ip'] }}:30443"
   {% endfor %}
 
 [tcp]
