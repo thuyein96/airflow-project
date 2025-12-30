@@ -152,17 +152,31 @@ data "aws_vpc" "k3s_vpc" {{
   }}
 }}
 
-data "aws_subnet" "k3s_subnet_0" {{
+data "aws_subnet" "k3s_public_subnet_0" {{
   filter {{
     name   = "tag:Name"
-    values = ["${{var.project_name}}-k3s-subnet-0"]
+    values = ["${{var.project_name}}-k3s-public-subnet-0"]
   }}
 }}
 
-data "aws_subnet" "k3s_subnet_1" {{
+data "aws_subnet" "k3s_public_subnet_1" {{
   filter {{
     name   = "tag:Name"
-    values = ["${{var.project_name}}-k3s-subnet-1"]
+    values = ["${{var.project_name}}-k3s-public-subnet-1"]
+  }}
+}}
+
+data "aws_subnet" "k3s_private_subnet_0" {{
+  filter {{
+    name   = "tag:Name"
+    values = ["${{var.project_name}}-k3s-private-subnet-0"]
+  }}
+}}
+
+data "aws_subnet" "k3s_private_subnet_1" {{
+  filter {{
+    name   = "tag:Name"
+    values = ["${{var.project_name}}-k3s-private-subnet-1"]
   }}
 }}
 
@@ -274,9 +288,9 @@ resource "aws_instance" "k3s_master" {{
   ami                    = data.aws_ami.ubuntu.id
   instance_type          = "t3.medium"
   iam_instance_profile   = aws_iam_instance_profile.k3s_profile.name
-  subnet_id              = data.aws_subnet.k3s_subnet_0.id
+  subnet_id              = data.aws_subnet.k3s_private_subnet_0.id
   vpc_security_group_ids = [aws_security_group.k3s_sg.id]
-  associate_public_ip_address = true
+  associate_public_ip_address = false
   key_name = aws_key_pair.k3s_auth.key_name
 
   user_data = base64encode(<<-EOF
@@ -301,7 +315,7 @@ resource "aws_instance" "k3s_edge" {{
   ami                    = data.aws_ami.ubuntu.id
   instance_type          = "t3.micro"
   iam_instance_profile   = aws_iam_instance_profile.k3s_profile.name
-  subnet_id              = data.aws_subnet.k3s_subnet_0.id
+  subnet_id              = data.aws_subnet.k3s_public_subnet_0.id
   vpc_security_group_ids = [aws_security_group.edge_sg.id]
   associate_public_ip_address = true
   key_name = aws_key_pair.k3s_auth.key_name
@@ -341,9 +355,9 @@ resource "aws_instance" "k3s_worker" {{
   ami                    = data.aws_ami.ubuntu.id
   instance_type          = each.value.node_size
   iam_instance_profile   = aws_iam_instance_profile.k3s_profile.name
-  subnet_id              = each.value.index % 2 == 0 ? data.aws_subnet.k3s_subnet_0.id : data.aws_subnet.k3s_subnet_1.id
+  subnet_id              = each.value.index % 2 == 0 ? data.aws_subnet.k3s_private_subnet_0.id : data.aws_subnet.k3s_private_subnet_1.id
   vpc_security_group_ids = [aws_security_group.k3s_sg.id]
-  associate_public_ip_address = true
+  associate_public_ip_address = false
   key_name = aws_key_pair.k3s_auth.key_name
 
   user_data = base64encode(<<-EOF

@@ -189,7 +189,10 @@ data "aws_availability_zones" "available" {
     state = "available"
 }
 
-resource "aws_subnet" "k3s_subnet" {
+# -------------------------
+# Public + Private subnets
+# -------------------------
+resource "aws_subnet" "k3s_public_subnet" {
     count                   = 2
     vpc_id                  = aws_vpc.k3s_vpc.id
     cidr_block              = "10.0.${count.index}.0/24"
@@ -197,11 +200,28 @@ resource "aws_subnet" "k3s_subnet" {
     map_public_ip_on_launch = true
 
     tags = {
-        Name = "${var.project_name}-k3s-subnet-${count.index}"
+        Name = "${var.project_name}-k3s-public-subnet-${count.index}"
+        Tier = "public"
     }
 }
 
-resource "aws_route_table" "k3s_rt" {
+resource "aws_subnet" "k3s_private_subnet" {
+    count                   = 2
+    vpc_id                  = aws_vpc.k3s_vpc.id
+    cidr_block              = "10.0.${count.index + 10}.0/24"
+    availability_zone       = data.aws_availability_zones.available.names[count.index]
+    map_public_ip_on_launch = false
+
+    tags = {
+        Name = "${var.project_name}-k3s-private-subnet-${count.index}"
+        Tier = "private"
+    }
+}
+
+# -------------------------
+# Routing: IGW for public, NAT for private
+# -------------------------
+resource "aws_route_table" "k3s_public_rt" {
     vpc_id = aws_vpc.k3s_vpc.id
 
     route {
@@ -210,22 +230,63 @@ resource "aws_route_table" "k3s_rt" {
     }
 
     tags = {
-        Name = "${var.project_name}-k3s-rt"
+        Name = "${var.project_name}-k3s-public-rt"
     }
 }
 
-resource "aws_route_table_association" "k3s_rta" {
+resource "aws_route_table_association" "k3s_public_rta" {
     count          = 2
-    subnet_id      = aws_subnet.k3s_subnet[count.index].id
-    route_table_id = aws_route_table.k3s_rt.id
+    subnet_id      = aws_subnet.k3s_public_subnet[count.index].id
+    route_table_id = aws_route_table.k3s_public_rt.id
+}
+
+resource "aws_eip" "k3s_nat_eip" {
+    domain = "vpc"
+    tags = {
+        Name = "${var.project_name}-k3s-nat-eip"
+    }
+}
+
+resource "aws_nat_gateway" "k3s_nat" {
+    allocation_id = aws_eip.k3s_nat_eip.id
+    subnet_id     = aws_subnet.k3s_public_subnet[0].id
+
+    tags = {
+        Name = "${var.project_name}-k3s-nat"
+    }
+
+    depends_on = [aws_internet_gateway.k3s_igw]
+}
+
+resource "aws_route_table" "k3s_private_rt" {
+    vpc_id = aws_vpc.k3s_vpc.id
+
+    route {
+        cidr_block     = "0.0.0.0/0"
+        nat_gateway_id = aws_nat_gateway.k3s_nat.id
+    }
+
+    tags = {
+        Name = "${var.project_name}-k3s-private-rt"
+    }
+}
+
+resource "aws_route_table_association" "k3s_private_rta" {
+    count          = 2
+    subnet_id      = aws_subnet.k3s_private_subnet[count.index].id
+    route_table_id = aws_route_table.k3s_private_rt.id
 }
 
 output "k3s_vpc_id" {
     value = aws_vpc.k3s_vpc.id
 }
 
-output "k3s_subnet_ids" {
-    value = aws_subnet.k3s_subnet[*].id
+output "k3s_public_subnet_ids" {
+    value = aws_subnet.k3s_public_subnet[*].id
+}
+
+output "k3s_private_subnet_ids" {
+    value = aws_subnet.k3s_private_subnet[*].id
 }
 """
     with open(f"{terraform_dir}/main.tf", "w") as f:

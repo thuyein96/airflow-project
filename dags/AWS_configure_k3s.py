@@ -113,12 +113,21 @@ def configure_clusters(**context):
         safe_name = cluster['cluster_name'].replace(" ", "-").lower()
         inventory_path = f"/tmp/hosts_{safe_name}.ini"
         
+        edge_public_ip = cluster['edge']['public_ip'] if cluster.get('edge') else None
+        proxyjump_arg = f"-o ProxyJump=ubuntu@{edge_public_ip} -o StrictHostKeyChecking=no" if edge_public_ip else "-o StrictHostKeyChecking=no"
+
         lines = ["[k3s_master]"]
-        lines.append(f"master ansible_host={cluster['master']['public_ip']} ansible_user=ubuntu ansible_ssh_private_key_file={SSH_KEY_PATH}")
+        lines.append(
+            f"master ansible_host={cluster['master']['private_ip']} ansible_user=ubuntu "
+            f"ansible_ssh_private_key_file={SSH_KEY_PATH} ansible_ssh_common_args='{proxyjump_arg}'"
+        )
         
         lines.append("\n[k3s_workers]")
         for idx, w in enumerate(cluster['workers']):
-            lines.append(f"worker{idx+1} ansible_host={w['public_ip']} private_ip={w['private_ip']} ansible_user=ubuntu ansible_ssh_private_key_file={SSH_KEY_PATH}")        
+            lines.append(
+                f"worker{idx+1} ansible_host={w['private_ip']} ansible_user=ubuntu "
+                f"ansible_ssh_private_key_file={SSH_KEY_PATH} ansible_ssh_common_args='{proxyjump_arg}'"
+            )
         
         lines.append("\n[edge]")
         if cluster['edge']:
@@ -174,13 +183,19 @@ def fetch_kubeconfigs(**context):
     cur = conn.cursor()
 
     for cluster in clusters:
-        master_ip = cluster["master"]["public_ip"]
+        edge_public_ip = cluster["edge"]["public_ip"] if cluster.get("edge") else None
+        master_ip = cluster["master"]["private_ip"]
         cluster_id = cluster["cluster_id"]
         safe_name = cluster['cluster_name'].replace(" ", "-").lower()
         temp_kube_path = f"/tmp/kubeconfig_{safe_name}"
 
+        if not edge_public_ip:
+            print(f"No edge node found for {cluster['cluster_name']}; cannot fetch kubeconfig from private master")
+            continue
+
         cmd = (
             f"ssh -o StrictHostKeyChecking=no -i {SSH_KEY_PATH} "
+            f"-o ProxyJump=ubuntu@{edge_public_ip} "
             f"ubuntu@{master_ip} 'cat /home/ubuntu/.kube/config' > {temp_kube_path}"
         )
         
