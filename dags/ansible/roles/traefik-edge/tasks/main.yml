@@ -3,6 +3,18 @@
     name: docker.io
     update_cache: yes
 
+- name: Enable SSH TCP forwarding for bastion
+  copy:
+    dest: /etc/ssh/sshd_config.d/99-bastion-forwarding.conf
+    content: |
+      AllowTcpForwarding yes
+    mode: '0644'
+
+- name: Restart SSH
+  systemd:
+    name: ssh
+    state: restarted
+
 - name: Enable Docker
   systemd:
     name: docker
