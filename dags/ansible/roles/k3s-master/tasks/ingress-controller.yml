@@ -25,9 +25,13 @@
   delay: 10
   until: traefik_install.rc == 0
 
+- name: Wait a bit for Helm controller to create resources
+  pause:
+    seconds: 15
+
 - name: Wait for Traefik pods to be ready
   shell: |
-    kubectl wait --for=condition=ready pod -l app.kubernetes.io/name=traefik -n kube-system --timeout=300s
+    kubectl wait --for=condition=ready pod -l app.kubernetes.io/instance=traefik -n kube-system --timeout=300s
   register: traefik_ready
   retries: 5
   delay: 30
