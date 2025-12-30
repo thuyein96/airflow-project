@@ -14,16 +14,11 @@
       version: 26.0.0
       targetNamespace: kube-system
       set:
-        - name: "ports.web.nodePort"
-          value: "30080"
-        - name: "ports.websecure.nodePort"
-          value: "30443"
-        - name: "service.type"
-          value: "NodePort"
-        - name: "ingressClass.enabled"
-          value: "true"
-        - name: "ingressClass.isDefaultClass"
-          value: "true"
+        ports.web.nodePort: "30080"
+        ports.websecure.nodePort: "30443"
+        service.type: "NodePort"
+        ingressClass.enabled: "true"
+        ingressClass.isDefaultClass: "true"
     EOF
   register: traefik_install
   retries: 3
