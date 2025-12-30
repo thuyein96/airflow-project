@@ -114,7 +114,12 @@ def configure_clusters(**context):
         inventory_path = f"/tmp/hosts_{safe_name}.ini"
         
         edge_public_ip = cluster['edge']['public_ip'] if cluster.get('edge') else None
-        proxyjump_arg = f"-o ProxyJump=ubuntu@{edge_public_ip} -o StrictHostKeyChecking=no" if edge_public_ip else "-o StrictHostKeyChecking=no"
+        proxyjump_arg = (
+            f"-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "
+            f"-o ProxyCommand=\"ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -i {SSH_KEY_PATH} -W %h:%p ubuntu@{edge_public_ip}\""
+            if edge_public_ip
+            else "-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null"
+        )
 
         lines = ["[k3s_master]"]
         lines.append(
@@ -200,9 +205,13 @@ def fetch_kubeconfigs(**context):
             print(f"No edge node found for {cluster['cluster_name']}; cannot fetch kubeconfig from private master")
             continue
 
+        proxy_cmd = (
+            f"ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -i {SSH_KEY_PATH} "
+            f"-W %h:%p ubuntu@{edge_public_ip}"
+        )
         cmd = (
-            f"ssh -o StrictHostKeyChecking=no -i {SSH_KEY_PATH} "
-            f"-o ProxyJump=ubuntu@{edge_public_ip} "
+            f"ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -i {SSH_KEY_PATH} "
+            f"-o ProxyCommand=\"{proxy_cmd}\" "
             f"ubuntu@{master_ip} 'cat /home/ubuntu/.kube/config' > {temp_kube_path}"
         )
         
