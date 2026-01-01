@@ -198,14 +198,8 @@ resource "aws_security_group" "k3s_sg" {{
     cidr_blocks = ["10.0.0.0/16"]
   }}
   ingress {{
-    from_port   = 30080
-    to_port     = 30080
-    protocol    = "tcp"
-    security_groups = [aws_security_group.edge_sg.id]
-  }}
-  ingress {{
-    from_port   = 30443
-    to_port     = 30443
+    from_port   = 30000
+    to_port     = 32767
     protocol    = "tcp"
     security_groups = [aws_security_group.edge_sg.id]
   }}

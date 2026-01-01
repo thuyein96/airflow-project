@@ -37,6 +37,32 @@
 
 # 4. Process the template to generate the dynamic config with Worker IPs
 # This fills in the IPs from your inventory [k3s_workers] group
+- name: Get Traefik web nodePort (port 80)
+  command: kubectl -n kube-system get svc traefik -o jsonpath='{.spec.ports[?(@.port==80)].nodePort}'
+  delegate_to: "{{ groups['k3s_master'][0] }}"
+  run_once: true
+  register: traefik_web_nodeport_cmd
+  changed_when: false
+
+- name: Get Traefik websecure nodePort (port 443)
+  command: kubectl -n kube-system get svc traefik -o jsonpath='{.spec.ports[?(@.port==443)].nodePort}'
+  delegate_to: "{{ groups['k3s_master'][0] }}"
+  run_once: true
+  register: traefik_websecure_nodeport_cmd
+  changed_when: false
+
+- name: Set Traefik nodePort facts
+  set_fact:
+    traefik_web_nodeport: "{{ traefik_web_nodeport_cmd.stdout | trim }}"
+    traefik_websecure_nodeport: "{{ traefik_websecure_nodeport_cmd.stdout | trim }}"
+
+- name: Validate Traefik nodePort discovery
+  assert:
+    that:
+      - traefik_web_nodeport | length > 0
+      - traefik_websecure_nodeport | length > 0
+    fail_msg: "Could not discover Traefik nodePorts from k3s master. Ensure Traefik service exists in kube-system and kubectl works on the master."
+
 - name: Generate Dynamic Configuration
   template:
     src: traefik_dynamic.toml.j2

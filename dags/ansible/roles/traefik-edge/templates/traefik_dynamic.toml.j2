@@ -11,7 +11,7 @@
   [http.services.k3s-ingress-http.loadBalancer]
   {% for host in groups['k3s_workers'] %}
     [[http.services.k3s-ingress-http.loadBalancer.servers]]
-      url = "http://{{ hostvars[host]['private_ip'] }}:30080"
+      url = "http://{{ hostvars[host]['private_ip'] }}:{{ traefik_web_nodeport }}"
   {% endfor %}
 
   # ----------------------------------------------------------------
@@ -26,7 +26,7 @@
   [http.services.k3s-ingress-https.loadBalancer]
   {% for host in groups['k3s_workers'] %}
     [[http.services.k3s-ingress-https.loadBalancer.servers]]
-      url = "https://{{ hostvars[host]['private_ip'] }}:30443"
+      url = "https://{{ hostvars[host]['private_ip'] }}:{{ traefik_websecure_nodeport }}"
   {% endfor %}
 
 [tcp]
@@ -41,10 +41,14 @@
   [tcp.services.k3s-workers-http.loadBalancer]
   {% for host in groups['k3s_workers'] %}
     [[tcp.services.k3s-workers-http.loadBalancer.servers]]
-      address = "{{ hostvars[host]['private_ip'] }}:30080"
+      address = "{{ hostvars[host]['private_ip'] }}:{{ traefik_web_nodeport }}"
   {% endfor %}
 
-  [tcp.routers.to-k3s-nodeport-https]
+  # ----------------------------------------------------------------
+  # HTTPS Traffic (Port 443)
+  # Forward all traffic on Port 443 to the Workers' Traefik NodePort (websecure)
+  # ----------------------------------------------------------------
+  [tcp.routers.to-k3s-https]
     entryPoints = ["websecure"]
     rule = "HostSNI(`*`)"
     service = "k3s-workers-https"
@@ -52,5 +56,5 @@
   [tcp.services.k3s-workers-https.loadBalancer]
   {% for host in groups['k3s_workers'] %}
     [[tcp.services.k3s-workers-https.loadBalancer.servers]]
-      address = "{{ hostvars[host]['private_ip'] }}:30443"
+      address = "{{ hostvars[host]['private_ip'] }}:{{ traefik_websecure_nodeport }}"
   {% endfor %}
