@@ -104,6 +104,13 @@
     traefik_web_nodeport: "{{ traefik_web_nodeport_cmd.stdout | trim }}"
     traefik_websecure_nodeport: "{{ traefik_websecure_nodeport_cmd.stdout | trim }}"
 
+- name: Show discovered Traefik nodePorts
+  debug:
+    msg:
+      - "Traefik service in kube-system: {{ traefik_svc_name }}"
+      - "NodePort web (HTTP): {{ traefik_web_nodeport }}"
+      - "NodePort websecure (HTTPS): {{ traefik_websecure_nodeport }}"
+
 - name: Validate Traefik nodePort discovery
   assert:
     that:
@@ -116,6 +123,15 @@
     src: traefik_dynamic.toml.j2
     dest: /etc/traefik-edge/dynamic.toml
     mode: '0644'
+
+- name: Show rendered dynamic config (first 120 lines)
+  command: sed -n '1,120p' /etc/traefik-edge/dynamic.toml
+  register: traefik_edge_dynamic_preview
+  changed_when: false
+
+- name: Print rendered dynamic config preview
+  debug:
+    msg: "{{ traefik_edge_dynamic_preview.stdout_lines }}"
 
 # 5. Run Traefik with Volumes
 # We mount the files we just created into the container
@@ -131,3 +147,17 @@
       -v /etc/traefik-edge/traefik.toml:/etc/traefik/traefik.toml \
       -v /etc/traefik-edge/dynamic.toml:/etc/traefik/dynamic.toml \
       traefik:v2.11
+  register: traefik_edge_run
+
+- name: Show Traefik edge container id
+  debug:
+    msg: "Started traefik-edge container: {{ traefik_edge_run.stdout | default('') }}"
+
+- name: Tail Traefik edge logs (last 80 lines)
+  shell: docker logs --tail=80 traefik-edge
+  register: traefik_edge_logs
+  changed_when: false
+
+- name: Print Traefik edge logs tail
+  debug:
+    msg: "{{ traefik_edge_logs.stdout_lines }}"
