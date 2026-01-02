@@ -3,11 +3,12 @@ import json
 import pika
 import psycopg2
 import shutil
+from datetime import datetime, timedelta
+
 from airflow import DAG
 from airflow.operators.python import PythonOperator
 from airflow.operators.bash import BashOperator
 from airflow.operators.empty import EmptyOperator
-from datetime import datetime, timedelta
 from dotenv import load_dotenv
 from os.path import expanduser
 
@@ -83,6 +84,128 @@ def get_repository_name(resource_id):
     finally:
         cursor.close()
         connection.close()
+
+
+# -------------------------
+# Step 2b: Fetch full destroy config
+# -------------------------
+def fetch_destroy_config(resource_id):
+    if not resource_id:
+        raise ValueError("No resource ID provided")
+
+    connection = get_db_connection()
+    cursor = connection.cursor()
+    try:
+        cursor.execute(
+            'SELECT "name", "region", "resourceConfigId" FROM "Resources" WHERE id = %s;',
+            (resource_id,),
+        )
+        res = cursor.fetchone()
+        if not res:
+            raise ValueError(f"No resource found for id={resource_id}")
+        repo_name, region, resource_config_id = res
+
+        cursor.execute(
+            'SELECT "id", "clusterName", "nodeCount", "nodeSize", "terraformState" '
+            'FROM "AwsK8sCluster" WHERE "resourceConfigId" = %s;',
+            (resource_config_id,),
+        )
+        rows = cursor.fetchall()
+        if not rows:
+            raise ValueError(f"No AwsK8sCluster rows found for resourceConfigId={resource_config_id}")
+
+        clusters = []
+        k3s_state = None
+        for cid, cname, node_count, node_size, tf_state in rows:
+            clusters.append(
+                {
+                    "id": str(cid),
+                    "cluster_name": cname,
+                    "node_count": int(node_count),
+                    "node_size": node_size,
+                }
+            )
+            if k3s_state is None and tf_state:
+                k3s_state = tf_state if isinstance(tf_state, dict) else json.loads(tf_state)
+
+        return {
+            "resource_id": resource_id,
+            "repo_name": repo_name,
+            "region": region,
+            "resource_config_id": str(resource_config_id),
+            "project_name": f"{repo_name}-{str(resource_id)[:4]}",
+            "k3s_clusters": clusters,
+            "k3s_terraform_state": k3s_state,
+        }
+    finally:
+        cursor.close()
+        connection.close()
+
+
+# -------------------------
+# Step 3: Recreate Terraform dirs/files
+# -------------------------
+def prepare_k3s_terraform_files(config):
+    repo_name = config["repo_name"]
+    terraform_dir = f"/opt/airflow/dags/terraform/{repo_name}/k3s"
+    os.makedirs(terraform_dir, exist_ok=True)
+
+    # Re-generate Terraform configuration (same as provision DAG)
+    # Import inside function to avoid parse-time side effects in Airflow.
+    from AWS_provide_k3s import write_terraform_files  # type: ignore
+
+    config_info = {
+        "resourcesId": config["resource_id"],
+        "repoName": repo_name,
+        "region": config["region"],
+        "k3s_clusters": config["k3s_clusters"],
+    }
+    write_terraform_files(terraform_dir, config_info)
+
+    # Restore terraform.tfstate from DB so destroy works even if the folder was deleted.
+    state = config.get("k3s_terraform_state")
+    if not state:
+        raise ValueError(
+            "Missing k3s terraformState in DB; cannot safely destroy compute resources. "
+            "Provision must store terraformState in AwsK8sCluster."
+        )
+
+    state_path = os.path.join(terraform_dir, "terraform.tfstate")
+    with open(state_path, "w") as f:
+        json.dump(state, f)
+
+    return terraform_dir
+
+
+def prepare_rg_terraform_files(config):
+    repo_name = config["repo_name"]
+    terraform_dir = f"/opt/airflow/dags/terraform/{repo_name}/rg"
+    os.makedirs(terraform_dir, exist_ok=True)
+
+    # Re-generate Terraform configuration (same as network provision DAG)
+    from AWS_Resources_Cluster import write_terraform_files as write_rg_files  # type: ignore
+
+    config_info = json.dumps(
+        {
+            "resourceId": config["resource_id"],
+            "repoName": repo_name,
+            "region": config["region"],
+            "cloudProvider": "aws",
+            "k8sCount": len(config.get("k3s_clusters", [])),
+        }
+    )
+    write_rg_files(terraform_dir, config_info)
+
+    # NOTE: This DAG (today) does not persist RG terraform state in DB.
+    # If terraform.tfstate is missing here, we fail loudly to avoid silently orphaning VPC resources.
+    state_path = os.path.join(terraform_dir, "terraform.tfstate")
+    if not os.path.exists(state_path):
+        raise FileNotFoundError(
+            f"Missing {state_path}. Cannot destroy network without Terraform state. "
+            "Do not delete the rg terraform directory/state before running destroy."
+        )
+
+    return terraform_dir
 
 # -------------------------
 # Step 3: Cleanup directories
@@ -163,10 +286,16 @@ with DAG(
     )
 
     # 2. Identify Project/Repo
-    get_repository_name_task = PythonOperator(
-        task_id="get_repository_name",
-        python_callable=get_repository_name,
+    fetch_destroy_config_task = PythonOperator(
+        task_id="fetch_destroy_config",
+        python_callable=fetch_destroy_config,
         op_args=["{{ ti.xcom_pull(task_ids='get_resource_id') }}"],
+    )
+
+    prepare_k3s_tf = PythonOperator(
+        task_id="prepare_k3s_terraform",
+        python_callable=prepare_k3s_terraform_files,
+        op_args=["{{ ti.xcom_pull(task_ids='fetch_destroy_config') }}"],
     )
 
     # 3. Destroy Compute Layer (K3s VMs, SGs, IAM, KeyPairs)
@@ -175,16 +304,19 @@ with DAG(
     destroy_k3s = BashOperator(
         task_id="terraform_destroy_k3s",
         bash_command=(
-            'TF_DIR="/opt/airflow/dags/terraform/{{ ti.xcom_pull(task_ids=\'get_repository_name\') }}/k3s"; '
-            'if [ -d "$TF_DIR" ]; then '
-            '   echo "Found K3s Terraform directory. Initiating destroy..."; '
-            '   cd "$TF_DIR" && terraform init -input=false && terraform destroy -auto-approve -input=false; '
-            'else '
-            '   echo "[!] Directory $TF_DIR does not exist. Skipping K3s destroy."; '
-            'fi'
+            'TF_DIR="{{ ti.xcom_pull(task_ids=\'prepare_k3s_terraform\') }}"; '
+            'echo "Using K3s Terraform dir: $TF_DIR"; '
+            'cd "$TF_DIR" && terraform init -input=false && terraform destroy -auto-approve -input=false'
         ),
         retries=3,
         retry_delay=timedelta(minutes=1)
+    )
+
+    prepare_rg_tf = PythonOperator(
+        task_id="prepare_rg_terraform",
+        python_callable=prepare_rg_terraform_files,
+        op_args=["{{ ti.xcom_pull(task_ids='fetch_destroy_config') }}"],
+        trigger_rule='all_success',
     )
 
     # 4. Destroy Network Layer (VPC, Subnets, IGW)
@@ -192,13 +324,9 @@ with DAG(
     destroy_rg = BashOperator(
         task_id="terraform_destroy_rg",
         bash_command=(
-            'TF_DIR="/opt/airflow/dags/terraform/{{ ti.xcom_pull(task_ids=\'get_repository_name\') }}/rg"; '
-            'if [ -d "$TF_DIR" ]; then '
-            '   echo "Found RG Terraform directory. Initiating destroy..."; '
-            '   cd "$TF_DIR" && terraform init -input=false && terraform destroy -auto-approve -input=false; '
-            'else '
-            '   echo "[!] Directory $TF_DIR does not exist. Skipping RG destroy."; '
-            'fi'
+            'TF_DIR="{{ ti.xcom_pull(task_ids=\'prepare_rg_terraform\') }}"; '
+            'echo "Using RG Terraform dir: $TF_DIR"; '
+            'cd "$TF_DIR" && terraform init -input=false && terraform destroy -auto-approve -input=false'
         ),
         trigger_rule='all_success',
         retries=3,
@@ -209,7 +337,7 @@ with DAG(
     cleanup_fs = PythonOperator(
         task_id="cleanup_directories",
         python_callable=cleanup_directories,
-        op_args=["{{ ti.xcom_pull(task_ids='get_repository_name') }}"],
+        op_args=["{{ ti.xcom_pull(task_ids='fetch_destroy_config')['repo_name'] }}"],
         trigger_rule='all_done', # Run cleanup even if terraform reported issues, to try and clear temp files
     )
 
@@ -227,9 +355,9 @@ with DAG(
     # Workflow Logic
     # -------------------------
     
-    get_resource_id >> get_repository_name_task 
+    get_resource_id >> fetch_destroy_config_task >> prepare_k3s_tf
     
     # Linear execution ensures dependencies are respected (Compute -> Network)
-    get_repository_name_task >> destroy_k3s >> destroy_rg 
+    prepare_k3s_tf >> destroy_k3s >> prepare_rg_tf >> destroy_rg 
     
     destroy_rg >> cleanup_fs >> delete_db_records >> end
