@@ -9,6 +9,7 @@
     service = "k3s-ingress-http"
 
   [http.services.k3s-ingress-http.loadBalancer]
+    passHostHeader = true
   {% for host in groups['k3s_workers'] %}
     [[http.services.k3s-ingress-http.loadBalancer.servers]]
       url = "http://{{ hostvars[host]['private_ip'] }}:{{ traefik_web_nodeport }}"
@@ -24,6 +25,7 @@
     [http.routers.to-k3s-ingress-secure.tls]
 
   [http.services.k3s-ingress-https.loadBalancer]
+    passHostHeader = true
   {% for host in groups['k3s_workers'] %}
     [[http.services.k3s-ingress-https.loadBalancer.servers]]
       url = "https://{{ hostvars[host]['private_ip'] }}:{{ traefik_websecure_nodeport }}"
