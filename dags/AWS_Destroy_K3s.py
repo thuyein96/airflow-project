@@ -3,6 +3,7 @@ import json
 import pika
 import psycopg2
 import shutil
+import ast
 from datetime import datetime, timedelta
 
 from airflow import DAG
@@ -146,6 +147,12 @@ def fetch_destroy_config(resource_id):
 # Step 3: Recreate Terraform dirs/files
 # -------------------------
 def prepare_k3s_terraform_files(config):
+    if isinstance(config, str):
+        try:
+            config = json.loads(config)
+        except Exception:
+            config = ast.literal_eval(config)
+
     repo_name = config["repo_name"]
     terraform_dir = f"/opt/airflow/dags/terraform/{repo_name}/k3s"
     os.makedirs(terraform_dir, exist_ok=True)
@@ -178,6 +185,12 @@ def prepare_k3s_terraform_files(config):
 
 
 def prepare_rg_terraform_files(config):
+    if isinstance(config, str):
+        try:
+            config = json.loads(config)
+        except Exception:
+            config = ast.literal_eval(config)
+
     repo_name = config["repo_name"]
     terraform_dir = f"/opt/airflow/dags/terraform/{repo_name}/rg"
     os.makedirs(terraform_dir, exist_ok=True)
@@ -211,6 +224,18 @@ def prepare_rg_terraform_files(config):
 # Step 3: Cleanup directories
 # -------------------------
 def cleanup_directories(repoName):
+    # Allow passing the full destroy config object
+    if isinstance(repoName, dict):
+        repoName = repoName.get("repo_name")
+    elif isinstance(repoName, str) and repoName.strip().startswith("{"):
+        try:
+            repoName = json.loads(repoName).get("repo_name")
+        except Exception:
+            repoName = ast.literal_eval(repoName).get("repo_name")
+
+    if not repoName:
+        raise ValueError("Missing repo_name for cleanup")
+
     base_path = f"/opt/airflow/dags/terraform/{repoName}"
     k3s_path = os.path.join(base_path, "k3s")
     rg_path = os.path.join(base_path, "rg")
@@ -295,7 +320,7 @@ with DAG(
     prepare_k3s_tf = PythonOperator(
         task_id="prepare_k3s_terraform",
         python_callable=prepare_k3s_terraform_files,
-        op_args=["{{ ti.xcom_pull(task_ids='fetch_destroy_config') }}"],
+        op_args=["{{ ti.xcom_pull(task_ids='fetch_destroy_config') | tojson }}"],
     )
 
     # 3. Destroy Compute Layer (K3s VMs, SGs, IAM, KeyPairs)
@@ -315,7 +340,7 @@ with DAG(
     prepare_rg_tf = PythonOperator(
         task_id="prepare_rg_terraform",
         python_callable=prepare_rg_terraform_files,
-        op_args=["{{ ti.xcom_pull(task_ids='fetch_destroy_config') }}"],
+        op_args=["{{ ti.xcom_pull(task_ids='fetch_destroy_config') | tojson }}"],
         trigger_rule='all_success',
     )
 
@@ -337,7 +362,7 @@ with DAG(
     cleanup_fs = PythonOperator(
         task_id="cleanup_directories",
         python_callable=cleanup_directories,
-        op_args=["{{ ti.xcom_pull(task_ids='fetch_destroy_config')['repo_name'] }}"],
+        op_args=["{{ ti.xcom_pull(task_ids='fetch_destroy_config') | tojson }}"],
         trigger_rule='all_done', # Run cleanup even if terraform reported issues, to try and clear temp files
     )
 
