@@ -121,10 +121,16 @@ def configure_clusters(**context):
             else "-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null"
         )
 
+        master_public_ip = None
+        if isinstance(cluster.get('master'), dict):
+            master_public_ip = cluster['master'].get('public_ip')
+
         lines = ["[k3s_master]"]
         lines.append(
             f"master ansible_host={cluster['master']['private_ip']} ansible_user=ubuntu "
-            f"ansible_ssh_private_key_file={SSH_KEY_PATH} ansible_ssh_common_args='{proxyjump_arg}'"
+            f"ansible_ssh_private_key_file={SSH_KEY_PATH} ansible_ssh_common_args='{proxyjump_arg}' "
+            f"k3s_tls_san={master_public_ip or cluster['master']['private_ip']} "
+            f"k3s_kubeconfig_server={master_public_ip or cluster['master']['private_ip']}"
         )
         
         lines.append("\n[k3s_workers]")

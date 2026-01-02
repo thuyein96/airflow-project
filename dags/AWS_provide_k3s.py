@@ -105,11 +105,13 @@ def write_terraform_files(terraform_dir, configInfo):
     load_dotenv(expanduser('/opt/airflow/dags/.env'))
 
     # terraform.auto.tfvars
+    admin_cidr = os.getenv('ADMIN_CIDR', '0.0.0.0/0')
     tfvars_content = f"""
 access_key       = "{os.getenv('AWS_ACCESS_KEY')}"
 secret_key       = "{os.getenv('AWS_SECRET_KEY')}"
 project_location = "{config_dict['region']}"
 project_name     = "{projectName}"
+  admin_cidr       = \"{admin_cidr}\"
 k3s_clusters     = {json.dumps(k3s_clusters, indent=4)}
 """
     with open(f"{terraform_dir}/terraform.auto.tfvars", "w") as f:
@@ -195,6 +197,12 @@ resource "aws_security_group" "k3s_sg" {{
     from_port   = 6443
     to_port     = 6443
     protocol    = "tcp"
+    cidr_blocks = [var.admin_cidr]
+  }}
+  ingress {{
+    from_port   = 6443
+    to_port     = 6443
+    protocol    = "tcp"
     cidr_blocks = ["10.0.0.0/16"]
   }}
   ingress {{
@@ -215,6 +223,18 @@ resource "aws_security_group" "k3s_sg" {{
     protocol    = "udp"
     cidr_blocks = ["10.0.0.0/16"]
   }}
+  ingress {{
+    from_port   = 80
+    to_port     = 80
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }}
+  ingress {{
+    from_port   = 443
+    to_port     = 443
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }} 
   egress {{
     from_port   = 0
     to_port     = 0
@@ -300,9 +320,9 @@ resource "aws_instance" "k3s_master" {{
   ami                    = data.aws_ami.ubuntu.id
   instance_type          = "t3.medium"
   iam_instance_profile   = aws_iam_instance_profile.k3s_profile.name
-  subnet_id              = data.aws_subnet.k3s_private_subnet_0.id
+  subnet_id              = data.aws_subnet.k3s_public_subnet_0.id
   vpc_security_group_ids = [aws_security_group.k3s_sg.id]
-  associate_public_ip_address = false
+  associate_public_ip_address = true
   key_name = aws_key_pair.k3s_auth.key_name
 
   user_data = base64encode(<<-EOF
@@ -367,9 +387,9 @@ resource "aws_instance" "k3s_worker" {{
   ami                    = data.aws_ami.ubuntu.id
   instance_type          = each.value.node_size
   iam_instance_profile   = aws_iam_instance_profile.k3s_profile.name
-  subnet_id              = each.value.index % 2 == 0 ? data.aws_subnet.k3s_private_subnet_0.id : data.aws_subnet.k3s_private_subnet_1.id
+  subnet_id              = each.value.index % 2 == 0 ? data.aws_subnet.k3s_public_subnet_0.id : data.aws_subnet.k3s_public_subnet_1.id
   vpc_security_group_ids = [aws_security_group.k3s_sg.id]
-  associate_public_ip_address = false
+  associate_public_ip_address = true
   key_name = aws_key_pair.k3s_auth.key_name
 
   user_data = base64encode(<<-EOF
@@ -458,6 +478,11 @@ variable "project_name" {{
   description = "Project Name"
   type        = string
   default     = "{projectName}"
+}}
+variable "admin_cidr" {{
+  description = "CIDR allowed to reach Kubernetes API (6443/tcp). Set to your public IP /32 for safety."
+  type        = string
+  default     = "{admin_cidr}"
 }}
 variable "k3s_clusters" {{
   description = "List of K3s cluster configurations"
