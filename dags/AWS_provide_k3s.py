@@ -342,7 +342,7 @@ resource "aws_instance" "k3s_master" {{
   }}
 }}
 
-# Edge Proxy (VM only - no Traefik yet)
+# Edge Proxy (VM only - no Traefik yet) - shared across clusters
 resource "aws_instance" "k3s_edge" {{
   ami                    = data.aws_ami.ubuntu.id
   instance_type          = "t3.micro"

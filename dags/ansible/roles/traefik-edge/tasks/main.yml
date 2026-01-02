@@ -28,6 +28,12 @@
     state: directory
     mode: '0755'
 
+- name: Create Traefik dynamic config directory
+  file:
+    path: /etc/traefik-edge/dynamic
+    state: directory
+    mode: '0755'
+
 # 3. Copy the static config file
 - name: Copy Static Configuration
   copy:
@@ -121,11 +127,11 @@
 - name: Generate Dynamic Configuration
   template:
     src: traefik_dynamic.toml.j2
-    dest: /etc/traefik-edge/dynamic.toml
+    dest: "/etc/traefik-edge/dynamic/{{ cluster_name }}.toml"
     mode: '0644'
 
 - name: Show rendered dynamic config (first 120 lines)
-  command: sed -n '1,120p' /etc/traefik-edge/dynamic.toml
+  command: "sed -n '1,120p' /etc/traefik-edge/dynamic/{{ cluster_name }}.toml"
   register: traefik_edge_dynamic_preview
   changed_when: false
 
@@ -145,7 +151,7 @@
       -p 443:443 \
       -p 8080:8080 \
       -v /etc/traefik-edge/traefik.toml:/etc/traefik/traefik.toml \
-      -v /etc/traefik-edge/dynamic.toml:/etc/traefik/dynamic.toml \
+      -v /etc/traefik-edge/dynamic:/etc/traefik/dynamic \
       traefik:v2.11
   register: traefik_edge_run
 

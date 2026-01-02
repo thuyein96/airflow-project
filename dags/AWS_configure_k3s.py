@@ -78,9 +78,24 @@ def fetch_cluster_info(**context):
         # Extract resources from Terraform State
         for r in tf_state.get("resources", []):
             if r.get("type") == "aws_instance":
-                # Find Shared Edge Node
+                # Find Edge Node for THIS specific cluster
                 if r.get("name") == "k3s_edge":
-                    edge = r["instances"][0]["attributes"]
+                    for i in r.get("instances", []):
+                        index_key = i.get("index_key")
+                        attrs = i.get("attributes", {})
+                        tags = attrs.get("tags", {}) or {}
+
+                        if index_key is not None and str(index_key) == str(cid):
+                            edge = attrs
+                            break
+
+                        if str(tags.get("ClusterId", "")) == str(cid):
+                            edge = attrs
+                            break
+
+                    # Backward-compatible fallback (older state had a single shared edge)
+                    if edge is None and r.get("instances"):
+                        edge = r["instances"][0].get("attributes")
                 
                 # Find Workers belonging to THIS specific cluster (using Tag filtering)
                 if r.get("name") == "k3s_worker":

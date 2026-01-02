@@ -6,7 +6,7 @@
 
 [providers]
   [providers.file]
-    filename = "/etc/traefik/dynamic.toml"
+    directory = "/etc/traefik/dynamic"
     watch = true
 
 [api]
