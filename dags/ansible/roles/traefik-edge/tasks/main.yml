@@ -37,19 +37,67 @@
 
 # 4. Process the template to generate the dynamic config with Worker IPs
 # This fills in the IPs from your inventory [k3s_workers] group
-- name: Get Traefik web nodePort (port 80)
-  command: kubectl -n kube-system get svc traefik -o jsonpath='{.spec.ports[?(@.port==80)].nodePort}'
+
+- name: Discover Traefik service name (wait until it exists)
+  shell: |
+    set -euo pipefail
+    if kubectl -n kube-system get svc traefik >/dev/null 2>&1; then
+      echo -n "traefik"
+      exit 0
+    fi
+    kubectl -n kube-system get svc -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}' \
+      | grep -E '^traefik($|[-])' | head -n1 || true
+  args:
+    executable: /bin/bash
+  delegate_to: "{{ groups['k3s_master'][0] }}"
+  run_once: true
+  register: traefik_svc_name_cmd
+  changed_when: false
+  retries: 30
+  delay: 10
+  until: (traefik_svc_name_cmd.stdout | trim | length) > 0
+
+- name: Set Traefik service name fact
+  set_fact:
+    traefik_svc_name: "{{ traefik_svc_name_cmd.stdout | trim }}"
+
+- name: Get Traefik web nodePort (prefer port name web; fallback port 80)
+  shell: |
+    set -euo pipefail
+    svc="{{ traefik_svc_name }}"
+    val="$(kubectl -n kube-system get svc "$svc" -o jsonpath='{.spec.ports[?(@.name=="web")].nodePort}' 2>/dev/null || true)"
+    if [ -z "$val" ]; then
+      val="$(kubectl -n kube-system get svc "$svc" -o jsonpath='{.spec.ports[?(@.port==80)].nodePort}' 2>/dev/null || true)"
+    fi
+    echo -n "$val"
+  args:
+    executable: /bin/bash
   delegate_to: "{{ groups['k3s_master'][0] }}"
   run_once: true
   register: traefik_web_nodeport_cmd
   changed_when: false
+  retries: 30
+  delay: 5
+  until: (traefik_web_nodeport_cmd.stdout | trim | length) > 0
 
-- name: Get Traefik websecure nodePort (port 443)
-  command: kubectl -n kube-system get svc traefik -o jsonpath='{.spec.ports[?(@.port==443)].nodePort}'
+- name: Get Traefik websecure nodePort (prefer port name websecure; fallback port 443)
+  shell: |
+    set -euo pipefail
+    svc="{{ traefik_svc_name }}"
+    val="$(kubectl -n kube-system get svc "$svc" -o jsonpath='{.spec.ports[?(@.name=="websecure")].nodePort}' 2>/dev/null || true)"
+    if [ -z "$val" ]; then
+      val="$(kubectl -n kube-system get svc "$svc" -o jsonpath='{.spec.ports[?(@.port==443)].nodePort}' 2>/dev/null || true)"
+    fi
+    echo -n "$val"
+  args:
+    executable: /bin/bash
   delegate_to: "{{ groups['k3s_master'][0] }}"
   run_once: true
   register: traefik_websecure_nodeport_cmd
   changed_when: false
+  retries: 30
+  delay: 5
+  until: (traefik_websecure_nodeport_cmd.stdout | trim | length) > 0
 
 - name: Set Traefik nodePort facts
   set_fact:

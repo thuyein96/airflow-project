@@ -34,7 +34,20 @@ echo
 
 # 6. Test NodePort connectivity
 echo "6. NodePort Connectivity Test:"
-NODEPORT=$(kubectl get svc traefik -n kube-system -o jsonpath='{.spec.ports[?(@.name=="web")].nodePort}')
+SVC_NAME=""
+if kubectl -n kube-system get svc traefik >/dev/null 2>&1; then
+    SVC_NAME="traefik"
+else
+    SVC_NAME=$(kubectl -n kube-system get svc -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}' \
+        | grep -E '^traefik($|[-])' | head -n1 || true)
+fi
+
+if [ -z "$SVC_NAME" ]; then
+    echo "Could not find a Traefik Service in kube-system" >&2
+    exit 1
+fi
+
+NODEPORT=$(kubectl get svc "$SVC_NAME" -n kube-system -o jsonpath='{.spec.ports[?(@.name=="web")].nodePort}')
 WORKER_IP=$(kubectl get nodes -o jsonpath='{.items[?(@.metadata.labels.role!="master")].status.addresses[?(@.type=="InternalIP")].address}' | head -1)
 
 if [ ! -z "$NODEPORT" ] && [ ! -z "$WORKER_IP" ]; then
