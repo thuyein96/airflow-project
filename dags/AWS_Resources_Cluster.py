@@ -118,7 +118,8 @@ def fetch_from_database(resource_id):
 def create_terraform_directory(configInfo):
     config_dict = json.loads(configInfo)
     projectName = config_dict['repoName']
-    terraform_dir = f"/opt/airflow/dags/terraform/{projectName}/rg"
+    # Keep AWS terraform modules isolated from other cloud providers.
+    terraform_dir = f"/opt/airflow/dags/terraform/{projectName}/aws/rg"
     os.makedirs(terraform_dir, exist_ok=True)
     print(f"[x] Created directory {terraform_dir}")
     return terraform_dir
