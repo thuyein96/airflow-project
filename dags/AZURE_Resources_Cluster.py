@@ -256,7 +256,7 @@ with DAG(
     # Trigger AKS DAG
     trigger_aks = TriggerDagRunOperator(
         task_id="trigger_aks",
-        trigger_dag_id="AZURE_terraform_k8s_provision",
+        trigger_dag_id="AZURE_terraform_k3s_provision",
         conf={"resource_id": "{{ ti.xcom_pull(task_ids='get_resource_id') }}"},
         wait_for_completion=False,
         trigger_rule='all_success',
