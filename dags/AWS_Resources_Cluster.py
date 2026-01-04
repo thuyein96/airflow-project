@@ -1,6 +1,7 @@
 import os
 import json
 import ast
+import glob
 import pika
 import psycopg2
 from airflow import DAG
@@ -128,6 +129,22 @@ def create_terraform_directory(configInfo):
 # -------------------------
 def write_terraform_files(terraform_dir, configInfo):
     config_dict = json.loads(configInfo)
+
+    # This folder is also used by other cloud DAGs in some setups. Terraform loads
+    # all *.tf files in a directory; any leftover azurerm provider config will
+    # break AWS runs (e.g., "Insufficient features blocks"). Clean old configs
+    # but keep state files so re-runs remain idempotent.
+    for tf_file in glob.glob(os.path.join(terraform_dir, "*.tf")):
+        try:
+            os.remove(tf_file)
+        except OSError:
+            pass
+    lock_file = os.path.join(terraform_dir, ".terraform.lock.hcl")
+    if os.path.exists(lock_file):
+        try:
+            os.remove(lock_file)
+        except OSError:
+            pass
 
     load_dotenv(expanduser('/opt/airflow/dags/.env'))
 
