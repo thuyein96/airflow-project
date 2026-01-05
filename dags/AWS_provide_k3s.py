@@ -520,27 +520,38 @@ def write_instance_info_to_db(terraform_dir, configInfo, **context):
     with open(state_file, 'r') as f:
         state = json.load(f)
 
+    edge_info = (
+      state.get("outputs", {})
+      .get("edge_proxy", {})
+      .get("value", {})
+    ) or {}
+
+
     # Store infrastructure state for each cluster
     for cluster in configInfo['k3s_clusters']:
         cluster_id = cluster['id']
         
         # Extract master info
         master_info = None
-        for resource in state.get('resources', []):
-            if resource.get('type') == 'aws_instance' and resource.get('name') == 'k3s_master':
-                for instance in resource.get('instances', []):
-                    if instance.get('index_key') == cluster_id:
-                        attrs = instance.get('attributes', {})
-                        master_info = {
-                            'instance_id': attrs.get('id'),
-                            'public_ip': attrs.get('public_ip'),
-                            'private_ip': attrs.get('private_ip')
-                        }
-                        break
+        # for resource in state.get('resources', []):
+        #     if resource.get('type') == 'aws_instance' and resource.get('name') == 'k3s_master':
+        #         for instance in resource.get('instances', []):
+        #             if instance.get('index_key') == cluster_id:
+        #                 attrs = instance.get('attributes', {})
+        #                 master_info = {
+        #                     'instance_id': attrs.get('id'),
+        #                     'public_ip': attrs.get('public_ip'),
+        #                     'private_ip': attrs.get('private_ip')
+        #                 }
+        #                 break
         
-        if not master_info:
-            print(f"Warning: No master found for cluster {cluster_id}")
-            continue
+        # if not master_info:
+        #     print(f"Warning: No master found for cluster {cluster_id}")
+        #     continue
+
+        # Keep backward compatibility: AWS_configure_k3s expects master fields at top-level.
+        # Add edge info as additional fields.
+        master_info["edge_public_ip"] = edge_info.get("public_ip")
 
         # Store in database with status 'provisioned'
         cursor.execute(
