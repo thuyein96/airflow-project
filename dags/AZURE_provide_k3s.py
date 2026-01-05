@@ -138,23 +138,6 @@ provider \"azurerm\" {{
   tenant_id       = var.tenant_id
 }}
 
-variable \"subscription_id\" {{ type = string }}
-variable \"client_id\" {{ type = string }}
-variable \"client_secret\" {{ type = string }}
-variable \"tenant_id\" {{ type = string }}
-variable \"project_location\" {{ type = string }}
-variable \"project_name\" {{ type = string }}
-variable \"admin_cidr\" {{ type = string }}
-
-variable \"k3s_clusters\" {{
-  type = list(object({{
-    id           = string
-    cluster_name = string
-    node_count   = number
-    node_size    = string
-  }}))
-}}
-
 data \"azurerm_resource_group\" \"rg\" {{
   name = var.project_name
 }}
