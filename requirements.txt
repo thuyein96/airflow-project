@@ -1,2 +1,3 @@
 pika
 apache-airflow-providers-celery
+requests
