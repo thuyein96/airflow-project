@@ -1,6 +1,5 @@
 import os
 import json
-import re
 import psycopg2
 import subprocess
 from pathlib import Path
@@ -48,16 +47,11 @@ def fetch_cluster_info(**context):
     )
     cur = conn.cursor()
 
-    # Get resource config ID + repo/name for resource-scoped DNS
-    cur.execute('SELECT "resourceConfigId", "name" FROM "Resources" WHERE id = %s;', (resource_id,))
+    # Get resource config ID
+    cur.execute('SELECT "resourceConfigId" FROM "Resources" WHERE id = %s;', (resource_id,))
     res = cur.fetchone()
     if not res: raise ValueError("Resource not found")
-    resource_config_id, repo_name = res
-
-    safe_repo = (repo_name or "resource").strip().lower().replace(" ", "-")
-    safe_repo = re.sub(r"[^a-z0-9-]", "-", safe_repo)
-    safe_repo = re.sub(r"-+", "-", safe_repo).strip("-") or "resource"
-    resource_slug = f"{safe_repo}-{resource_id[:4]}"
+    resource_config_id = res[0]
 
     # Get all clusters associated with this config
     cur.execute(
@@ -116,7 +110,6 @@ def fetch_cluster_info(**context):
             "master": endpoint,
             "workers": workers,
             "edge": edge,
-            "resource_slug": resource_slug,
         })
 
     return clusters_data
@@ -169,10 +162,7 @@ def configure_clusters(**context):
         # --- IMPORTANT: Variables for Dynamic Routing ---
         lines.append("\n[all:vars]")
         lines.append(f"cluster_name={safe_name}")
-        resource_slug = (cluster.get("resource_slug") or "resource").strip().lower()
-        resource_slug = re.sub(r"[^a-z0-9-]", "-", resource_slug)
-        resource_slug = re.sub(r"-+", "-", resource_slug).strip("-") or "resource"
-        lines.append(f"cluster_domain={safe_name}.{resource_slug}.orchestronic.dev")
+        lines.append(f"cluster_domain={safe_name}.orchestronic.dev") # <--- Generates unique domain
         
         with open(inventory_path, "w") as f:
             f.write("\n".join(lines))

@@ -12,8 +12,6 @@ from airflow.operators.python import PythonOperator
 from airflow.operators.bash import BashOperator
 from airflow.operators.trigger_dagrun import TriggerDagRunOperator
 
-from cloudflare_dns import register_edge_records_for_resource
-
 # -------------------------
 # Default DAG args
 # -------------------------
@@ -579,52 +577,6 @@ def write_instance_info_to_db(terraform_dir, configInfo, **context):
     # Return resource_id for triggering DAG 2
     return configInfo['resourcesId']
 
-
-def register_cloudflare_dns(terraform_dir, configInfo, **context):
-    """Register per-cluster DNS records in Cloudflare pointing to the edge VM."""
-    if isinstance(configInfo, str):
-        configInfo = ast.literal_eval(configInfo)
-
-    state_file = Path(terraform_dir) / "terraform.tfstate"
-    if not state_file.exists():
-        raise FileNotFoundError(f"Terraform state file not found at {state_file}")
-
-    load_dotenv(expanduser('/opt/airflow/dags/.env'))
-
-    zone_name = os.getenv("CLOUDFLARE_ZONE_NAME", "orchestronic.dev")
-    zone_id = os.getenv("CLOUDFLARE_ZONE_ID")
-    api_token = os.getenv("CLOUDFLARE_API_TOKEN")
-    proxied = os.getenv("CLOUDFLARE_PROXIED", "false").strip().lower() in ("1", "true", "yes")
-
-    if not zone_id or not api_token:
-        raise ValueError("Missing CLOUDFLARE_ZONE_ID or CLOUDFLARE_API_TOKEN in .env")
-
-    with open(state_file, 'r') as f:
-        state = json.load(f)
-
-    edge_info = (
-        state.get("outputs", {})
-        .get("edge_proxy", {})
-        .get("value", {})
-    ) or {}
-
-    edge_public_ip = edge_info.get("public_ip")
-    if not edge_public_ip:
-        raise ValueError("edge_proxy.public_ip not found in terraform state outputs")
-
-    # One edge VM may serve multiple clusters. Create a resource-scoped DNS base
-    # with a wildcard so cluster domains can be nested under it.
-    resource_slug = f"{configInfo.get('repoName', 'resource')}-{str(configInfo.get('resourcesId', ''))[:4]}"
-
-    register_edge_records_for_resource(
-      zone_name=zone_name,
-      zone_id=zone_id,
-      api_token=api_token,
-      edge_public_ip=edge_public_ip,
-      resource_slug=resource_slug,
-      proxied=proxied,
-    )
-
 with DAG(
     'AWS_terraform_k3s_provision',
     default_args=default_args,
@@ -672,15 +624,6 @@ with DAG(
         ],
     )
 
-    register_dns_task = PythonOperator(
-      task_id="register_cloudflare_dns",
-      python_callable=register_cloudflare_dns,
-      op_args=[
-        "{{ ti.xcom_pull(task_ids='create_terraform_dir') }}",
-        "{{ ti.xcom_pull(task_ids='fetch_config') }}",
-      ],
-    )
-
     # Trigger configuration DAG
     trigger_config = TriggerDagRunOperator(
         task_id="trigger_k3s_configuration",
@@ -689,4 +632,4 @@ with DAG(
         wait_for_completion=False,
     )
 
-    fetch_task >> create_dir_task >> write_files_task >> terraform_init >> terraform_apply >> write_db_task >> register_dns_task >> trigger_config
+    fetch_task >> create_dir_task >> write_files_task >> terraform_init >> terraform_apply >> write_db_task >> trigger_config
