@@ -25,6 +25,39 @@ default_args = {
     'retries': 1,
 }
 
+
+def _parse_config(config):
+    if isinstance(config, dict):
+        return config
+    if isinstance(config, str):
+        try:
+            return json.loads(config)
+        except Exception:
+            return ast.literal_eval(config)
+    raise TypeError(f"Unsupported config type: {type(config)}")
+
+
+def _pick_rg_terraform_dir(repo_name: str) -> str:
+    """Pick the best RG terraform directory.
+
+    Preferred: /opt/airflow/dags/terraform/<repo>/aws/rg
+    Legacy:    /opt/airflow/dags/terraform/<repo>/rg
+    """
+    preferred = f"/opt/airflow/dags/terraform/{repo_name}/aws/rg"
+    legacy = f"/opt/airflow/dags/terraform/{repo_name}/rg"
+
+    preferred_state = os.path.join(preferred, "terraform.tfstate")
+    legacy_state = os.path.join(legacy, "terraform.tfstate")
+
+    if os.path.exists(preferred_state):
+        return preferred
+    if os.path.exists(legacy_state):
+        print(f"[!] Using legacy RG terraform dir (state found): {legacy}")
+        return legacy
+
+    # Default to preferred path so the directory structure stays consistent.
+    return preferred
+
 # -------------------------
 # DB Connection Helper
 # -------------------------
@@ -147,11 +180,7 @@ def fetch_destroy_config(resource_id):
 # Step 3: Recreate Terraform dirs/files
 # -------------------------
 def prepare_k3s_terraform_files(config):
-    if isinstance(config, str):
-        try:
-            config = json.loads(config)
-        except Exception:
-            config = ast.literal_eval(config)
+    config = _parse_config(config)
 
     repo_name = config["repo_name"]
     terraform_dir = f"/opt/airflow/dags/terraform/{repo_name}/k3s"
@@ -185,14 +214,10 @@ def prepare_k3s_terraform_files(config):
 
 
 def prepare_rg_terraform_files(config):
-    if isinstance(config, str):
-        try:
-            config = json.loads(config)
-        except Exception:
-            config = ast.literal_eval(config)
+    config = _parse_config(config)
 
     repo_name = config["repo_name"]
-    terraform_dir = f"/opt/airflow/dags/terraform/{repo_name}/rg"
+    terraform_dir = _pick_rg_terraform_dir(repo_name)
     os.makedirs(terraform_dir, exist_ok=True)
 
     # Re-generate Terraform configuration (same as network provision DAG)
@@ -213,9 +238,22 @@ def prepare_rg_terraform_files(config):
     # If terraform.tfstate is missing here, we fail loudly to avoid silently orphaning VPC resources.
     state_path = os.path.join(terraform_dir, "terraform.tfstate")
     if not os.path.exists(state_path):
+        # Try to recover state from the other known path if the directory layout changed.
+        preferred = f"/opt/airflow/dags/terraform/{repo_name}/aws/rg"
+        legacy = f"/opt/airflow/dags/terraform/{repo_name}/rg"
+        candidates = [preferred, legacy]
+        for candidate in candidates:
+            candidate_state = os.path.join(candidate, "terraform.tfstate")
+            if candidate != terraform_dir and os.path.exists(candidate_state):
+                shutil.copy2(candidate_state, state_path)
+                print(f"[!] Recovered RG terraform state from {candidate_state} -> {state_path}")
+                break
+
+    if not os.path.exists(state_path):
         raise FileNotFoundError(
             f"Missing {state_path}. Cannot destroy network without Terraform state. "
-            "Do not delete the rg terraform directory/state before running destroy."
+            "Terraform destroy is what deletes VPC/subnets/ENIs/EIPs/IGW/route tables/SGs. "
+            "Ensure the RG terraform directory (and terraform.tfstate) was not deleted before running destroy."
         )
 
     return terraform_dir
@@ -237,18 +275,19 @@ def cleanup_directories(repoName):
         raise ValueError("Missing repo_name for cleanup")
 
     base_path = f"/opt/airflow/dags/terraform/{repoName}"
-    k3s_path = os.path.join(base_path, "k3s")
-    rg_path = os.path.join(base_path, "rg")
 
-    # Remove K3s dir
-    if os.path.exists(k3s_path):
-        shutil.rmtree(k3s_path)
-        print(f"Removed directory: {k3s_path}")
-    
-    # Remove RG dir
-    if os.path.exists(rg_path):
-        shutil.rmtree(rg_path)
-        print(f"Removed directory: {rg_path}")
+    # Support both current and legacy layouts
+    dirs_to_remove = [
+        os.path.join(base_path, "k3s"),
+        os.path.join(base_path, "aws", "rg"),
+        os.path.join(base_path, "rg"),
+        os.path.join(base_path, "aws"),
+    ]
+
+    for path in dirs_to_remove:
+        if os.path.exists(path):
+            shutil.rmtree(path)
+            print(f"Removed directory: {path}")
 
     # Clean up parent if empty
     if os.path.exists(base_path) and not os.listdir(base_path):
@@ -331,7 +370,8 @@ with DAG(
         bash_command=(
             'TF_DIR="{{ ti.xcom_pull(task_ids=\'prepare_k3s_terraform\') }}"; '
             'echo "Using K3s Terraform dir: $TF_DIR"; '
-            'cd "$TF_DIR" && terraform init -input=false && terraform destroy -auto-approve -input=false'
+            'cd "$TF_DIR" && terraform init -input=false -lock-timeout=5m '
+            '&& terraform destroy -auto-approve -input=false -refresh=true -lock-timeout=5m'
         ),
         retries=3,
         retry_delay=timedelta(minutes=1)
@@ -351,7 +391,8 @@ with DAG(
         bash_command=(
             'TF_DIR="{{ ti.xcom_pull(task_ids=\'prepare_rg_terraform\') }}"; '
             'echo "Using RG Terraform dir: $TF_DIR"; '
-            'cd "$TF_DIR" && terraform init -input=false && terraform destroy -auto-approve -input=false'
+            'cd "$TF_DIR" && terraform init -input=false -lock-timeout=5m '
+            '&& terraform destroy -auto-approve -input=false -refresh=true -lock-timeout=5m'
         ),
         trigger_rule='all_success',
         retries=3,
