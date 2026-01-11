@@ -2,6 +2,12 @@
 {% set rg = (resource_group | default('default')) %}
 
 [http]
+  # Backend TLS on NodePort typically uses a default/self-signed cert.
+  # When the edge connects to https://<worker_private_ip>:30443 it may fail
+  # certificate validation unless we skip verification.
+  [http.serversTransports.k3s_{{ ck }}_insecure]
+    insecureSkipVerify = true
+
   # ----------------------------------------------------------------
   # Multi-cluster edge routing
   # Supports TWO host formats:
@@ -30,6 +36,7 @@
 
   [http.services.k3s_{{ ck }}_ingress_https.loadBalancer]
     passHostHeader = true
+    serversTransport = "k3s_{{ ck }}_insecure"
   {% for host in groups['k3s_workers'] %}
     [[http.services.k3s_{{ ck }}_ingress_https.loadBalancer.servers]]
       url = "https://{{ hostvars[host]['private_ip'] }}:{{ traefik_websecure_nodeport }}"

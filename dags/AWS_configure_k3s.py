@@ -47,11 +47,18 @@ def fetch_cluster_info(**context):
     )
     cur = conn.cursor()
 
-    # Get resource config ID
-    cur.execute('SELECT "resourceConfigId" FROM "Resources" WHERE id = %s;', (resource_id,))
+    # Get resource config ID + a stable name we can reuse as a routing group (resource_group)
+    cur.execute('SELECT "resourceConfigId", "name" FROM "Resources" WHERE id = %s;', (resource_id,))
     res = cur.fetchone()
-    if not res: raise ValueError("Resource not found")
-    resource_config_id = res[0]
+    if not res:
+        raise ValueError("Resource not found")
+    resource_config_id, resource_name = res
+
+    resource_group = (resource_name or "").strip().lower().replace(" ", "-")
+    if resource_group.startswith("rg-"):
+        resource_group = resource_group[3:]
+    if not resource_group:
+        resource_group = "default"
 
     # Get all clusters associated with this config
     cur.execute(
@@ -110,6 +117,7 @@ def fetch_cluster_info(**context):
             "master": endpoint,
             "workers": workers,
             "edge": edge,
+            "resource_group": resource_group,
         })
 
     return clusters_data
@@ -162,6 +170,9 @@ def configure_clusters(**context):
         # --- IMPORTANT: Variables for Dynamic Routing ---
         lines.append("\n[all:vars]")
         lines.append(f"cluster_name={safe_name}")
+        # Used by the edge Traefik template to build host rules like:
+        # <app>-<cluster_name>.rg-<resource_group>.orchestronic.dev
+        lines.append(f"resource_group={cluster.get('resource_group')}")
         lines.append(f"cluster_domain={safe_name}.orchestronic.dev") # <--- Generates unique domain
         
         with open(inventory_path, "w") as f:
