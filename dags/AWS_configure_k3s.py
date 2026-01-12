@@ -55,8 +55,6 @@ def fetch_cluster_info(**context):
     resource_config_id, resource_name = res
 
     resource_group = (resource_name or "").strip().lower().replace(" ", "-")
-    if resource_group.startswith("rg-"):
-        resource_group = resource_group[3:]
     if not resource_group:
         resource_group = "default"
 
@@ -127,6 +125,17 @@ def fetch_cluster_info(**context):
 # --------------------------------------------------
 def configure_clusters(**context):
     clusters = context["ti"].xcom_pull(task_ids="fetch_cluster_info")
+
+    # Optional: allow installing a TLS cert/key on the edge Traefik via env vars.
+    # These paths must exist on the machine/container running Ansible.
+    traefik_tls_cert_src = os.getenv("TRAEFIK_TLS_CERT_SRC", "").strip()
+    traefik_tls_key_src = os.getenv("TRAEFIK_TLS_KEY_SRC", "").strip()
+    ansible_extra_vars: list[str] = []
+    if traefik_tls_cert_src and traefik_tls_key_src:
+        ansible_extra_vars.extend([
+            "-e", f"traefik_tls_cert_src={traefik_tls_cert_src}",
+            "-e", f"traefik_tls_key_src={traefik_tls_key_src}",
+        ])
     
     # Iterate over every cluster and run Ansible sequentially
     for cluster in clusters:
@@ -171,9 +180,9 @@ def configure_clusters(**context):
         lines.append("\n[all:vars]")
         lines.append(f"cluster_name={safe_name}")
         # Used by the edge Traefik template to build host rules like:
-        # <app>-<cluster_name>.rg-<resource_group>.orchestronic.dev
+        # <app>-<cluster_name>.{{ rg }}.orchestronic.dev
         lines.append(f"resource_group={cluster.get('resource_group')}")
-        lines.append(f"cluster_domain={safe_name}.orchestronic.dev") # <--- Generates unique domain
+        lines.append(f"cluster_domain={safe_name}.orchestronic.dev") 
         
         with open(inventory_path, "w") as f:
             f.write("\n".join(lines))
@@ -191,7 +200,7 @@ def configure_clusters(**context):
         
         for pb in playbooks:
             pb_path = os.path.join(ANSIBLE_BASE, "playbooks", pb)
-            cmd = ["ansible-playbook", "-vvv", "-i", inventory_path, pb_path]
+            cmd = ["ansible-playbook", "-vvv", "-i", inventory_path, *ansible_extra_vars, pb_path]
             
             print(f"Running playbook: {pb} for {cluster['cluster_name']}")
             result = subprocess.run(cmd, env=env, cwd=ANSIBLE_BASE, capture_output=True, text=True)

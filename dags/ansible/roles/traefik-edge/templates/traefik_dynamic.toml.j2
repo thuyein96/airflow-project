@@ -10,14 +10,15 @@
 
   # ----------------------------------------------------------------
   # Multi-cluster edge routing
-  # Supports TWO host formats:
-  # orchestronic.dev: <app>-<cluster_name>.rg-<rg>.orchestronic.dev
+  # Supports host formats:
+  # Legacy (two labels, requires custom/advanced cert for HTTPS):
+  # <app>-<cluster_name>.{{ rg }}.orchestronic.dev
   # ----------------------------------------------------------------
   
   # HTTP Router - supports both patterns
   [http.routers.to_k3s_{{ ck }}_ingress]
     entryPoints = ["web"]
-    rule = "HostRegexp(`{app:.+}-{{ cluster_name }}.rg-{{ rg }}.orchestronic.dev`)"
+    rule = "HostRegexp(`{app:.+}-{{ cluster_name }}.{{ rg }}.orchestronic.dev`)"
     service = "k3s_{{ ck }}_ingress_http"
 
   [http.services.k3s_{{ ck }}_ingress_http.loadBalancer]
@@ -30,7 +31,7 @@
   # HTTPS Router - supports both patterns
   [http.routers.to_k3s_{{ ck }}_ingress_secure]
     entryPoints = ["websecure"]
-    rule = "HostRegexp(`{app:.+}-{{ cluster_name }}.rg-{{ rg }}.orchestronic.dev`)"
+    rule = "HostRegexp(`{app:.+}-{{ cluster_name }}.{{ rg }}.orchestronic.dev`)"
     service = "k3s_{{ ck }}_ingress_https"
     [http.routers.to_k3s_{{ ck }}_ingress_secure.tls]
 
