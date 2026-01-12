@@ -13,12 +13,14 @@
   # Supports host formats:
   # Legacy (two labels, requires custom/advanced cert for HTTPS):
   # <app>-<cluster_name>.{{ rg }}.orchestronic.dev
+  # Previous nip.io (dot-separated, IP embedded in hostname):
+  # <app>.<cluster_name>.<edge_ip>.nip.io
   # ----------------------------------------------------------------
   
   # HTTP Router - supports both patterns
   [http.routers.to_k3s_{{ ck }}_ingress]
     entryPoints = ["web"]
-    rule = "HostRegexp(`{app:.+}-{{ cluster_name }}.{{ rg }}.orchestronic.dev`)"
+    rule = "HostRegexp(`{app:.+}-{{ cluster_name }}.{{ rg }}.orchestronic.dev`) || HostRegexp(`{app:.+}[.]{{ cluster_name }}[.]{ip:([0-9]{1,3}[.]){3}[0-9]{1,3}}[.]nip[.]io`) || HostRegexp(`{app:.+}[.]{{ cluster_name }}[.]{ip:([0-9]{1,3}-){3}[0-9]{1,3}}[.]nip[.]io`)"
     service = "k3s_{{ ck }}_ingress_http"
 
   [http.services.k3s_{{ ck }}_ingress_http.loadBalancer]
@@ -31,7 +33,7 @@
   # HTTPS Router - supports both patterns
   [http.routers.to_k3s_{{ ck }}_ingress_secure]
     entryPoints = ["websecure"]
-    rule = "HostRegexp(`{app:.+}-{{ cluster_name }}.{{ rg }}.orchestronic.dev`)"
+    rule = "HostRegexp(`{app:.+}-{{ cluster_name }}.{{ rg }}.orchestronic.dev`) || HostRegexp(`{app:.+}[.]{{ cluster_name }}[.]{ip:([0-9]{1,3}[.]){3}[0-9]{1,3}}[.]nip[.]io`) || HostRegexp(`{app:.+}[.]{{ cluster_name }}[.]{ip:([0-9]{1,3}-){3}[0-9]{1,3}}[.]nip[.]io`)"
     service = "k3s_{{ ck }}_ingress_https"
     [http.routers.to_k3s_{{ ck }}_ingress_secure.tls]
 
