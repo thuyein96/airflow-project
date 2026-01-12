@@ -1,26 +1,14 @@
 {% set ck = (cluster_name | default('cluster') | replace('-', '_')) %}
-{% set rg = (resource_group | default('default')) %}
 
 [http]
-  # Backend TLS on NodePort typically uses a default/self-signed cert.
-  # When the edge connects to https://<worker_private_ip>:30443 it may fail
-  # certificate validation unless we skip verification.
-  [http.serversTransports.k3s_{{ ck }}_insecure]
-    insecureSkipVerify = true
-
   # ----------------------------------------------------------------
   # Multi-cluster edge routing
-  # Supports host formats:
-  # Legacy (two labels, requires custom/advanced cert for HTTPS):
-  # <app>-<cluster_name>.{{ rg }}.orchestronic.dev
-  # Previous nip.io (dot-separated, IP embedded in hostname):
-  # <app>.<cluster_name>.<edge_ip>.nip.io
+  # Host format REQUIRED: <app>.<cluster_name>.<edge-ip>.nip.io
+  # Example: myapp.cluster1.47.128.76.54.nip.io
   # ----------------------------------------------------------------
-  
-  # HTTP Router - supports both patterns
   [http.routers.to_k3s_{{ ck }}_ingress]
     entryPoints = ["web"]
-    rule = "HostRegexp(`{app:.+}-{{ cluster_name }}.{{ rg }}.orchestronic.dev`) || HostRegexp(`{app:.+}[.]{{ cluster_name }}[.]{ip:([0-9]{1,3}[.]){3}[0-9]{1,3}}[.]nip[.]io`) || HostRegexp(`{app:.+}[.]{{ cluster_name }}[.]{ip:([0-9]{1,3}-){3}[0-9]{1,3}}[.]nip[.]io`)"
+    rule = "HostRegexp(`{app:.+}.{{ cluster_name }}.{ip:[0-9]+\\.[0-9]+\\.[0-9]+\\.[0-9]+}.nip.io`)"
     service = "k3s_{{ ck }}_ingress_http"
 
   [http.services.k3s_{{ ck }}_ingress_http.loadBalancer]
@@ -30,16 +18,14 @@
       url = "http://{{ hostvars[host]['private_ip'] }}:{{ traefik_web_nodeport }}"
   {% endfor %}
 
-  # HTTPS Router - supports both patterns
   [http.routers.to_k3s_{{ ck }}_ingress_secure]
     entryPoints = ["websecure"]
-    rule = "HostRegexp(`{app:.+}-{{ cluster_name }}.{{ rg }}.orchestronic.dev`) || HostRegexp(`{app:.+}[.]{{ cluster_name }}[.]{ip:([0-9]{1,3}[.]){3}[0-9]{1,3}}[.]nip[.]io`) || HostRegexp(`{app:.+}[.]{{ cluster_name }}[.]{ip:([0-9]{1,3}-){3}[0-9]{1,3}}[.]nip[.]io`)"
+    rule = "HostRegexp(`{app:.+}.{{ cluster_name }}.{ip:[0-9]+\\.[0-9]+\\.[0-9]+\\.[0-9]+}.nip.io`)"
     service = "k3s_{{ ck }}_ingress_https"
     [http.routers.to_k3s_{{ ck }}_ingress_secure.tls]
 
   [http.services.k3s_{{ ck }}_ingress_https.loadBalancer]
     passHostHeader = true
-    serversTransport = "k3s_{{ ck }}_insecure"
   {% for host in groups['k3s_workers'] %}
     [[http.services.k3s_{{ ck }}_ingress_https.loadBalancer.servers]]
       url = "https://{{ hostvars[host]['private_ip'] }}:{{ traefik_websecure_nodeport }}"

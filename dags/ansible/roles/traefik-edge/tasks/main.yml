@@ -34,35 +34,6 @@
     state: directory
     mode: '0755'
 
-- name: Create Traefik certs directory
-  file:
-    path: /etc/traefik-edge/certs
-    state: directory
-    mode: '0700'
-
-- name: Copy TLS certificate (optional)
-  copy:
-    src: "{{ traefik_tls_cert_src }}"
-    dest: /etc/traefik-edge/certs/orchestronic.crt
-    mode: '0644'
-  when: traefik_tls_cert_src is defined and (traefik_tls_cert_src | string | length) > 0
-
-- name: Copy TLS private key (optional)
-  copy:
-    src: "{{ traefik_tls_key_src }}"
-    dest: /etc/traefik-edge/certs/orchestronic.key
-    mode: '0600'
-  when: traefik_tls_key_src is defined and (traefik_tls_key_src | string | length) > 0
-
-- name: Generate TLS dynamic config (optional)
-  template:
-    src: traefik_tls.toml.j2
-    dest: /etc/traefik-edge/dynamic/tls.toml
-    mode: '0644'
-  when:
-    - traefik_tls_cert_src is defined and (traefik_tls_cert_src | string | length) > 0
-    - traefik_tls_key_src is defined and (traefik_tls_key_src | string | length) > 0
-
 # 3. Copy the static config file
 - name: Copy Static Configuration
   copy:
@@ -181,7 +152,6 @@
       -p 8080:8080 \
       -v /etc/traefik-edge/traefik.toml:/etc/traefik/traefik.toml \
       -v /etc/traefik-edge/dynamic:/etc/traefik/dynamic \
-      -v /etc/traefik-edge/certs:/etc/traefik/certs:ro \
       traefik:v2.11
   register: traefik_edge_run
 
