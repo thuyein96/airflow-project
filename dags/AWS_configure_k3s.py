@@ -47,11 +47,11 @@ def fetch_cluster_info(**context):
     )
     cur = conn.cursor()
 
-    # Get resource config ID
-    cur.execute('SELECT "resourceConfigId" FROM "Resources" WHERE id = %s;', (resource_id,))
+    # Get resource config ID and resource name (used as resource group)
+    cur.execute('SELECT "resourceConfigId", "name" FROM "Resources" WHERE id = %s;', (resource_id,))
     res = cur.fetchone()
     if not res: raise ValueError("Resource not found")
-    resource_config_id = res[0]
+    resource_config_id, resource_name = res[0], res[1]
 
     # Get all clusters associated with this config
     cur.execute(
@@ -107,6 +107,7 @@ def fetch_cluster_info(**context):
         clusters_data.append({
             "cluster_id": cid,
             "cluster_name": name,
+            "resource_group": resource_name,  # Real resource group from database
             "master": endpoint,
             "workers": workers,
             "edge": edge,
@@ -160,9 +161,12 @@ def configure_clusters(**context):
             lines.append(f"edge01 ansible_host={cluster['edge']['public_ip']} ansible_user=ubuntu ansible_ssh_private_key_file={SSH_KEY_PATH}")
 
         # --- IMPORTANT: Variables for Dynamic Routing ---
+        resource_group = cluster.get('resource_group', 'rg')  # Use real resource group from database
         lines.append("\n[all:vars]")
         lines.append(f"cluster_name={safe_name}")
-        lines.append(f"cluster_domain={safe_name}.orchestronic.dev") # <--- Generates unique domain
+        lines.append(f"resource_group={resource_group}")  # Resource group for multi-cluster DNS
+        lines.append(f"edge_public_ip={edge_public_ip}")  # For nip.io fallback URLs
+        lines.append(f"cluster_domain={safe_name}.{resource_group}.orchestronic.dev")  # Full domain with resource group
         
         with open(inventory_path, "w") as f:
             f.write("\n".join(lines))
@@ -198,6 +202,87 @@ def configure_clusters(**context):
                 print(f"SUCCESS: {pb}")
 
     print("All clusters configured successfully.")
+
+# --------------------------------------------------
+# Step 2.5: Create Cloudflare DNS Records
+# --------------------------------------------------
+def create_cloudflare_dns(**context):
+    """Create wildcard DNS for each cluster's edge VM"""
+    try:
+        import requests
+    except ImportError:
+        print("⚠️ requests module not installed, skipping DNS creation")
+        return
+    
+    load_dotenv(ENV_PATH)
+    
+    CF_API_TOKEN = os.getenv('CLOUDFLARE_API_TOKEN')
+    CF_ZONE_ID = os.getenv('CLOUDFLARE_ZONE_ID')
+    
+    if not CF_API_TOKEN or not CF_ZONE_ID:
+        print("⚠️ Cloudflare credentials not set, skipping DNS creation")
+        print("Set CLOUDFLARE_API_TOKEN and CLOUDFLARE_ZONE_ID in .env")
+        return
+    
+    clusters = context["ti"].xcom_pull(task_ids="fetch_cluster_info")
+    
+    for cluster in clusters:
+        edge_ip = cluster.get('edge', {}).get('public_ip')
+        if not edge_ip:
+            print(f"⚠️ No edge IP for {cluster['cluster_name']}, skipping DNS")
+            continue
+        
+        cluster_name = cluster['cluster_name'].replace(" ", "-").lower()
+        resource_group = cluster.get('resource_group', 'rg')  # Use real resource group
+        record_name = f"*.{cluster_name}.{resource_group}"  # Matches URL pattern: app-cluster.resourcegroup.orchestronic.dev
+        full_domain = f"{record_name}.orchestronic.dev"
+        
+        headers = {
+            'Authorization': f'Bearer {CF_API_TOKEN}',
+            'Content-Type': 'application/json'
+        }
+        
+        data = {
+            "type": "A",
+            "name": record_name,
+            "content": edge_ip,
+            "ttl": 120,
+            "proxied": False  # DNS only (grey cloud)
+        }
+        
+        try:
+            # Check if record exists
+            response = requests.get(
+                f'https://api.cloudflare.com/client/v4/zones/{CF_ZONE_ID}/dns_records?name={full_domain}',
+                headers=headers,
+                timeout=10
+            )
+            response.raise_for_status()
+            existing = response.json().get('result', [])
+            
+            if existing:
+                # Update existing record
+                record_id = existing[0]['id']
+                response = requests.put(
+                    f'https://api.cloudflare.com/client/v4/zones/{CF_ZONE_ID}/dns_records/{record_id}',
+                    headers=headers,
+                    json=data,
+                    timeout=10
+                )
+                response.raise_for_status()
+                print(f"✓ Updated DNS: {full_domain} → {edge_ip}")
+            else:
+                # Create new record
+                response = requests.post(
+                    f'https://api.cloudflare.com/client/v4/zones/{CF_ZONE_ID}/dns_records',
+                    headers=headers,
+                    json=data,
+                    timeout=10
+                )
+                response.raise_for_status()
+                print(f"✓ Created DNS: {full_domain} → {edge_ip}")
+        except Exception as e:
+            print(f"✗ Failed to create DNS for {full_domain}: {e}")
 
 # --------------------------------------------------
 # Step 3: Fetch Kubeconfigs (Looping Logic)
@@ -278,9 +363,14 @@ with DAG(
         python_callable=configure_clusters,
     )
 
+    create_dns = PythonOperator(
+        task_id="create_cloudflare_dns",
+        python_callable=create_cloudflare_dns,
+    )
+
     store_configs = PythonOperator(
         task_id="store_kubeconfigs",
         python_callable=fetch_kubeconfigs,
     )
 
-    fetch_info >> configure_all >> store_configs
+    fetch_info >> configure_all >> create_dns >> store_configs
