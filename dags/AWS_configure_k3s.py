@@ -123,8 +123,8 @@ def generate_cloudflare_origin_cert(**context):
     try:
         import requests
     except ImportError:
-        print("⚠️ requests module not installed, skipping certificate generation")
-        return {}
+        print("✗ requests module not installed")
+        raise RuntimeError("requests module is required for certificate generation. Install it with: pip install requests")
     
     load_dotenv(ENV_PATH)
     
@@ -134,9 +134,9 @@ def generate_cloudflare_origin_cert(**context):
     CF_EMAIL = os.getenv('CLOUDFLARE_EMAIL')
     
     if not CF_ZONE_ID or (not CF_API_TOKEN and not CF_API_KEY):
-        print("⚠️ Cloudflare credentials not set, skipping certificate generation")
-        print("Set CLOUDFLARE_API_TOKEN (with SSL permissions) or CLOUDFLARE_API_KEY + CLOUDFLARE_EMAIL")
-        return {}
+        error_msg = "Cloudflare credentials not set. Set CLOUDFLARE_API_TOKEN (with SSL permissions) or CLOUDFLARE_API_KEY + CLOUDFLARE_EMAIL"
+        print(f"✗ {error_msg}")
+        raise ValueError(error_msg)
     
     clusters = context["ti"].xcom_pull(task_ids="fetch_cluster_info")
     certificates = {}
@@ -208,6 +208,15 @@ def generate_cloudflare_origin_cert(**context):
                     json=data,
                     timeout=30
                 )
+                
+                # Log detailed error if request fails
+                if not response.ok:
+                    error_detail = response.json() if response.text else {"status": response.status_code}
+                    print(f"✗ Certificate creation failed for {resource_group}")
+                    print(f"  Status: {response.status_code}")
+                    print(f"  Response: {error_detail}")
+                    raise RuntimeError(f"Failed to create certificate for {resource_group}: {error_detail}")
+                
                 response.raise_for_status()
                 
                 result = response.json()
@@ -222,8 +231,13 @@ def generate_cloudflare_origin_cert(**context):
                     print(f"  Certificate ID: {cert_data.get('id')}")
                 else:
                     print(f"✗ Failed to create certificate: {result.get('errors')}")
+                    raise RuntimeError(f"Certificate creation failed for {resource_group}: {result.get('errors')}")
+        except requests.exceptions.RequestException as e:
+            print(f"✗ Network error with certificate for {resource_group}: {e}")
+            raise
         except Exception as e:
             print(f"✗ Error with certificate for {resource_group}: {e}")
+            raise
     
     return certificates
 
@@ -346,9 +360,9 @@ def create_cloudflare_dns(**context):
     CF_EMAIL = os.getenv('CLOUDFLARE_EMAIL')
     
     if not CF_ZONE_ID or (not CF_API_TOKEN and not CF_API_KEY):
-        print("⚠️ Cloudflare credentials not set, skipping DNS creation")
-        print("Set CLOUDFLARE_API_TOKEN or CLOUDFLARE_API_KEY + CLOUDFLARE_EMAIL")
-        return
+        error_msg = "Cloudflare credentials not set. Set CLOUDFLARE_API_TOKEN or CLOUDFLARE_API_KEY + CLOUDFLARE_EMAIL"
+        print(f"✗ {error_msg}")
+        raise ValueError(error_msg)
     
     # Use API Token (preferred) or Global API Key
     if CF_API_TOKEN:
@@ -418,8 +432,12 @@ def create_cloudflare_dns(**context):
                 )
                 response.raise_for_status()
                 print(f"✓ Created DNS: {full_domain} → {edge_ip}")
+        except requests.exceptions.RequestException as e:
+            print(f"✗ Network error creating DNS for {full_domain}: {e}")
+            raise
         except Exception as e:
             print(f"✗ Failed to create DNS for {full_domain}: {e}")
+            raise
 
 # --------------------------------------------------
 # Step 3: Fetch Kubeconfigs (Looping Logic)
