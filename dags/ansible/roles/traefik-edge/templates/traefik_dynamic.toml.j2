@@ -8,7 +8,7 @@
   # HTTP Router - redirect to HTTPS
   [http.routers.to_k3s_{{ ck }}_ingress]
     entryPoints = ["web"]
-    rule = "HostRegexp(`{app:.+}-{{ cluster_name }}.{{ rg }}.orchestronic.dev`)"
+    rule = "HostRegexp(`{app:.+}.{{ rg }}.orchestronic.dev`)"
     middlewares = ["redirect-to-https"]
     service = "k3s_{{ ck }}_ingress_http"
 
@@ -26,7 +26,7 @@
   # HTTPS Router
   [http.routers.to_k3s_{{ ck }}_ingress_secure]
     entryPoints = ["websecure"]
-    rule = "HostRegexp(`{app:.+}-{{ cluster_name }}.{{ rg }}.orchestronic.dev`)"
+    rule = "HostRegexp(`{app:.+}.{{ rg }}.orchestronic.dev`)"
     service = "k3s_{{ ck }}_ingress_https"
     [http.routers.to_k3s_{{ ck }}_ingress_secure.tls]
       # Certificate loaded from static config or tls.toml

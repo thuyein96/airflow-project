@@ -139,23 +139,24 @@ def generate_cloudflare_origin_cert(**context):
     clusters = context["ti"].xcom_pull(task_ids="fetch_cluster_info")
     certificates = {}
     
+    # Extract unique resource groups to avoid duplicate certificate creation
+    resource_groups = list(set(cluster.get('resource_group', 'rg') for cluster in clusters))
+    print(f"Found {len(resource_groups)} unique resource groups: {resource_groups}")
+    
     headers = {
         'Authorization': f'Bearer {CF_API_TOKEN}',
         'Content-Type': 'application/json',
         'X-Auth-Email': CF_EMAIL
     }
     
-    for cluster in clusters:
-        cluster_name = cluster['cluster_name'].replace(" ", "-").lower()
-        resource_group = cluster.get('resource_group', 'rg')
-        
-        # Hostnames for this cluster
+    for resource_group in resource_groups:
+        # Hostnames for this resource group (covers all clusters in the group)
         hostnames = [
-            f"*-{cluster_name}.{resource_group}.orchestronic.dev",
-            f"{cluster_name}.{resource_group}.orchestronic.dev"
+            f"*.{resource_group}.orchestronic.dev",
+            f"{resource_group}.orchestronic.dev"
         ]
         
-        print(f"Checking certificates for {cluster_name}...")
+        print(f"Checking certificates for {resource_group}...")
         
         # Check if certificate already exists
         try:
@@ -202,16 +203,16 @@ def generate_cloudflare_origin_cert(**context):
                 result = response.json()
                 if result.get('success'):
                     cert_data = result['result']
-                    certificates[cluster_name] = {
+                    certificates[resource_group] = {
                         'certificate': cert_data.get('certificate'),
                         'private_key': cert_data.get('private_key')
                     }
-                    print(f"✓ Created certificate for {cluster_name}")
+                    print(f"✓ Created certificate for {resource_group}")
                     print(f"  Hostnames: {', '.join(hostnames)}")
                 else:
                     print(f"✗ Failed to create certificate: {result.get('errors')}")
         except Exception as e:
-            print(f"✗ Error with certificate for {cluster_name}: {e}")
+            print(f"✗ Error with certificate for {resource_group}: {e}")
     
     return certificates
 
@@ -269,16 +270,16 @@ def configure_clusters(**context):
         lines.append(f"edge_public_ip={edge_public_ip}")  # For nip.io fallback URLs
         lines.append(f"cluster_domain={safe_name}.{resource_group}.orchestronic.dev")  # Full domain with resource group
         
-        # Add SSL certificates if available
-        if safe_name in certificates:
-            cert_data = certificates[safe_name]
+        # Add SSL certificates if available (keyed by resource_group, not cluster name)
+        if resource_group in certificates:
+            cert_data = certificates[resource_group]
             if cert_data.get('certificate') and cert_data.get('private_key'):
                 # Escape newlines for Ansible variable
                 cert_content = cert_data['certificate'].replace('\n', '\\n')
                 key_content = cert_data['private_key'].replace('\n', '\\n')
                 lines.append(f'cloudflare_origin_cert="{cert_content}"')
                 lines.append(f'cloudflare_origin_key="{key_content}"')
-                print(f"✓ SSL certificates added to inventory for {safe_name}")
+                print(f"✓ SSL certificates added to inventory for {resource_group}")
         
         with open(inventory_path, "w") as f:
             f.write("\n".join(lines))
@@ -338,15 +339,18 @@ def create_cloudflare_dns(**context):
     
     clusters = context["ti"].xcom_pull(task_ids="fetch_cluster_info")
     
+    # Group clusters by resource group and get edge IP for each
+    rg_to_edge = {}
     for cluster in clusters:
+        resource_group = cluster.get('resource_group', 'rg')
         edge_ip = cluster.get('edge', {}).get('public_ip')
-        if not edge_ip:
-            print(f"⚠️ No edge IP for {cluster['cluster_name']}, skipping DNS")
-            continue
-        
-        cluster_name = cluster['cluster_name'].replace(" ", "-").lower()
-        resource_group = cluster.get('resource_group', 'rg')  # Use real resource group
-        record_name = f"*-{cluster_name}.{resource_group}"  # Matches URL pattern: app-cluster.resourcegroup.orchestronic.dev
+        if edge_ip and resource_group not in rg_to_edge:
+            rg_to_edge[resource_group] = edge_ip
+    
+    print(f"Creating DNS for {len(rg_to_edge)} unique resource groups")
+    
+    for resource_group, edge_ip in rg_to_edge.items():
+        record_name = f"*.{resource_group}"  # Matches URL pattern: app.resourcegroup.orchestronic.dev
         full_domain = f"{record_name}.orchestronic.dev"
         
         headers = {
