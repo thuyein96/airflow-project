@@ -185,6 +185,8 @@
       -p 8080:8080 \
       -v /etc/traefik-edge/traefik.toml:/etc/traefik/traefik.toml \
       -v /etc/traefik-edge/dynamic:/etc/traefik/dynamic \
+      -v /etc/traefik-edge/origin-cert.pem:/etc/traefik/origin-cert.pem:ro \
+      -v /etc/traefik-edge/origin-key.pem:/etc/traefik/origin-key.pem:ro \
       traefik:v2.11
   register: traefik_edge_run
 
