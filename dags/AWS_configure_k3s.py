@@ -129,11 +129,13 @@ def generate_cloudflare_origin_cert(**context):
     load_dotenv(ENV_PATH)
     
     CF_API_TOKEN = os.getenv('CLOUDFLARE_API_TOKEN')
+    CF_API_KEY = os.getenv('CLOUDFLARE_API_KEY')
     CF_ZONE_ID = os.getenv('CLOUDFLARE_ZONE_ID')
     CF_EMAIL = os.getenv('CLOUDFLARE_EMAIL')
     
-    if not CF_API_TOKEN or not CF_ZONE_ID:
+    if not CF_ZONE_ID or (not CF_API_TOKEN and not CF_API_KEY):
         print("⚠️ Cloudflare credentials not set, skipping certificate generation")
+        print("Set CLOUDFLARE_API_TOKEN (with SSL permissions) or CLOUDFLARE_API_KEY + CLOUDFLARE_EMAIL")
         return {}
     
     clusters = context["ti"].xcom_pull(task_ids="fetch_cluster_info")
@@ -143,11 +145,20 @@ def generate_cloudflare_origin_cert(**context):
     resource_groups = list(set(cluster.get('resource_group', 'rg') for cluster in clusters))
     print(f"Found {len(resource_groups)} unique resource groups: {resource_groups}")
     
-    headers = {
-        'Authorization': f'Bearer {CF_API_TOKEN}',
-        'Content-Type': 'application/json',
-        'X-Auth-Email': CF_EMAIL
-    }
+    # Use API Token (preferred) or Global API Key
+    if CF_API_TOKEN:
+        headers = {
+            'Authorization': f'Bearer {CF_API_TOKEN}',
+            'Content-Type': 'application/json'
+        }
+        print("Using API Token authentication")
+    else:
+        headers = {
+            'X-Auth-Key': CF_API_KEY,
+            'X-Auth-Email': CF_EMAIL,
+            'Content-Type': 'application/json'
+        }
+        print("Using Global API Key authentication")
     
     for resource_group in resource_groups:
         # Hostnames for this resource group (covers all clusters in the group)
@@ -330,12 +341,27 @@ def create_cloudflare_dns(**context):
     load_dotenv(ENV_PATH)
     
     CF_API_TOKEN = os.getenv('CLOUDFLARE_API_TOKEN')
+    CF_API_KEY = os.getenv('CLOUDFLARE_API_KEY')
     CF_ZONE_ID = os.getenv('CLOUDFLARE_ZONE_ID')
+    CF_EMAIL = os.getenv('CLOUDFLARE_EMAIL')
     
-    if not CF_API_TOKEN or not CF_ZONE_ID:
+    if not CF_ZONE_ID or (not CF_API_TOKEN and not CF_API_KEY):
         print("⚠️ Cloudflare credentials not set, skipping DNS creation")
-        print("Set CLOUDFLARE_API_TOKEN and CLOUDFLARE_ZONE_ID in .env")
+        print("Set CLOUDFLARE_API_TOKEN or CLOUDFLARE_API_KEY + CLOUDFLARE_EMAIL")
         return
+    
+    # Use API Token (preferred) or Global API Key
+    if CF_API_TOKEN:
+        headers = {
+            'Authorization': f'Bearer {CF_API_TOKEN}',
+            'Content-Type': 'application/json'
+        }
+    else:
+        headers = {
+            'X-Auth-Key': CF_API_KEY,
+            'X-Auth-Email': CF_EMAIL,
+            'Content-Type': 'application/json'
+        }
     
     clusters = context["ti"].xcom_pull(task_ids="fetch_cluster_info")
     
@@ -352,11 +378,6 @@ def create_cloudflare_dns(**context):
     for resource_group, edge_ip in rg_to_edge.items():
         record_name = f"*.{resource_group}"  # Matches URL pattern: app.resourcegroup.orchestronic.dev
         full_domain = f"{record_name}.orchestronic.dev"
-        
-        headers = {
-            'Authorization': f'Bearer {CF_API_TOKEN}',
-            'Content-Type': 'application/json'
-        }
         
         data = {
             "type": "A",
