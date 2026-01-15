@@ -169,11 +169,12 @@ def generate_cloudflare_origin_cert(**context):
         
         print(f"Checking certificates for {resource_group}...")
         
-        # Check if certificate already exists
+        # Check if certificate already exists (using Origin CA API)
         try:
             list_response = requests.get(
-                f'https://api.cloudflare.com/client/v4/zones/{CF_ZONE_ID}/origin_tls_client_auth',
+                'https://api.cloudflare.com/client/v4/certificates',
                 headers=headers,
+                params={'zone_id': CF_ZONE_ID},
                 timeout=10
             )
             
@@ -182,29 +183,27 @@ def generate_cloudflare_origin_cert(**context):
                 certs = list_response.json().get('result', [])
                 for cert in certs:
                     cert_hostnames = cert.get('hostnames', [])
-                    # Check if any hostname matches
-                    if any(h in hostnames for h in cert_hostnames):
+                    # Check if hostnames match
+                    if set(hostnames) == set(cert_hostnames):
                         existing_cert = cert
-                        print(f"✓ Found existing certificate for {cluster_name}")
+                        print(f"✓ Found existing certificate for {resource_group}")
+                        # Note: Cloudflare doesn't return private key after creation
+                        print(f"⚠️ Private key not available for existing cert, will create new one")
+                        existing_cert = None  # Force recreation to get private key
                         break
             
-            if existing_cert:
-                cert_id = existing_cert['id']
-                # Note: Cloudflare doesn't allow retrieving private key after creation
-                # So we'll need to create a new one if private key is needed
-                print(f"⚠️ Certificate exists but private key unavailable, creating new one")
-                existing_cert = None
-            
             if not existing_cert:
-                # Create new certificate
+                # Create new Origin CA certificate (auto-generate)
+                # Generate CSR data
                 data = {
                     "hostnames": hostnames,
+                    "requested_validity": 5475,  # 15 years in days
                     "request_type": "origin-rsa",
-                    "requested_validity": 5475  # 15 years
+                    "csr": ""  # Empty CSR means Cloudflare generates it
                 }
                 
                 response = requests.post(
-                    f'https://api.cloudflare.com/client/v4/zones/{CF_ZONE_ID}/origin_tls_client_auth',
+                    'https://api.cloudflare.com/client/v4/certificates',  # Origin CA endpoint
                     headers=headers,
                     json=data,
                     timeout=30
@@ -220,6 +219,7 @@ def generate_cloudflare_origin_cert(**context):
                     }
                     print(f"✓ Created certificate for {resource_group}")
                     print(f"  Hostnames: {', '.join(hostnames)}")
+                    print(f"  Certificate ID: {cert_data.get('id')}")
                 else:
                     print(f"✗ Failed to create certificate: {result.get('errors')}")
         except Exception as e:
