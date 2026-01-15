@@ -47,11 +47,11 @@ def fetch_cluster_info(**context):
     )
     cur = conn.cursor()
 
-    # Get resource config ID and resource name (used as resource group)
+    # Get resource config ID
     cur.execute('SELECT "resourceConfigId", "name" FROM "Resources" WHERE id = %s;', (resource_id,))
     res = cur.fetchone()
     if not res: raise ValueError("Resource not found")
-    resource_config_id, resource_name = res[0], res[1]
+    resource_config_id, resource_group = res[0], res[1]
 
     # Get all clusters associated with this config
     cur.execute(
@@ -107,194 +107,13 @@ def fetch_cluster_info(**context):
         clusters_data.append({
             "cluster_id": cid,
             "cluster_name": name,
-            "resource_group": resource_name,  # Real resource group from database
+            "resource_group": resource_group,  # Real resource group from database
             "master": endpoint,
             "workers": workers,
             "edge": edge,
-            "resource_group": resource_group,
         })
 
     return clusters_data
-
-# --------------------------------------------------
-# Step 1.5: Generate Cloudflare Origin Certificates
-# --------------------------------------------------
-def generate_cloudflare_origin_cert(**context):
-    """Generate Cloudflare origin certificate for each cluster"""
-    try:
-        import requests
-    except ImportError:
-        print("✗ requests module not installed")
-        raise RuntimeError("requests module is required for certificate generation. Install it with: pip install requests")
-    
-    try:
-        from cryptography import x509
-        from cryptography.x509.oid import NameOID
-        from cryptography.hazmat.primitives import hashes
-        from cryptography.hazmat.primitives.asymmetric import rsa
-        from cryptography.hazmat.primitives import serialization
-    except ImportError:
-        print("✗ cryptography module not installed")
-        raise RuntimeError("cryptography module is required. Install it with: pip install cryptography")
-    
-    load_dotenv(ENV_PATH)
-    
-    CF_API_TOKEN = os.getenv('CLOUDFLARE_API_TOKEN')
-    CF_API_KEY = os.getenv('CLOUDFLARE_API_KEY')
-    CF_ZONE_ID = os.getenv('CLOUDFLARE_ZONE_ID')
-    CF_EMAIL = os.getenv('CLOUDFLARE_EMAIL')
-    
-    if not CF_ZONE_ID or (not CF_API_TOKEN and not CF_API_KEY):
-        error_msg = "Cloudflare credentials not set. Set CLOUDFLARE_API_TOKEN (with SSL permissions) or CLOUDFLARE_API_KEY + CLOUDFLARE_EMAIL"
-        print(f"✗ {error_msg}")
-        raise ValueError(error_msg)
-    
-    clusters = context["ti"].xcom_pull(task_ids="fetch_cluster_info")
-    certificates = {}
-    
-    # Extract unique resource groups to avoid duplicate certificate creation
-    resource_groups = list(set(cluster.get('resource_group', 'rg') for cluster in clusters))
-    print(f"Found {len(resource_groups)} unique resource groups: {resource_groups}")
-    
-    # Use API Token (preferred) or Global API Key
-    if CF_API_TOKEN:
-        headers = {
-            'Authorization': f'Bearer {CF_API_TOKEN}',
-            'Content-Type': 'application/json'
-        }
-        print("Using API Token authentication")
-    else:
-        headers = {
-            'X-Auth-Key': CF_API_KEY,
-            'X-Auth-Email': CF_EMAIL,
-            'Content-Type': 'application/json'
-        }
-        print("Using Global API Key authentication")
-    
-    for resource_group in resource_groups:
-        # Hostnames for this resource group (covers all clusters in the group)
-        hostnames = [
-            f"*.{resource_group}.orchestronic.dev",
-            f"{resource_group}.orchestronic.dev"
-        ]
-        
-        print(f"Checking certificates for {resource_group}...")
-        
-        # Check if certificate already exists (using Origin CA API)
-        try:
-            list_response = requests.get(
-                'https://api.cloudflare.com/client/v4/certificates',
-                headers=headers,
-                params={'zone_id': CF_ZONE_ID},
-                timeout=10
-            )
-            
-            existing_cert = None
-            if list_response.ok:
-                certs = list_response.json().get('result', [])
-                for cert in certs:
-                    cert_hostnames = cert.get('hostnames', [])
-                    # Check if hostnames match
-                    if set(hostnames) == set(cert_hostnames):
-                        existing_cert = cert
-                        print(f"✓ Found existing certificate for {resource_group}")
-                        # Note: Cloudflare doesn't return private key after creation
-                        print(f"⚠️ Private key not available for existing cert, will create new one")
-                        existing_cert = None  # Force recreation to get private key
-                        break
-            
-            if not existing_cert:
-                # Generate private key and CSR
-                print(f"Generating CSR for {resource_group}...")
-                
-                # Generate private key
-                private_key = rsa.generate_private_key(
-                    public_exponent=65537,
-                    key_size=2048,
-                )
-                
-                # Build CSR
-                csr_builder = x509.CertificateSigningRequestBuilder()
-                csr_builder = csr_builder.subject_name(x509.Name([
-                    x509.NameAttribute(NameOID.COUNTRY_NAME, u"US"),
-                    x509.NameAttribute(NameOID.STATE_OR_PROVINCE_NAME, u"California"),
-                    x509.NameAttribute(NameOID.LOCALITY_NAME, u"San Francisco"),
-                    x509.NameAttribute(NameOID.ORGANIZATION_NAME, u"Orchestronic"),
-                    x509.NameAttribute(NameOID.COMMON_NAME, hostnames[0]),
-                ]))
-                
-                # Add SANs (Subject Alternative Names)
-                san_list = [x509.DNSName(hostname) for hostname in hostnames]
-                csr_builder = csr_builder.add_extension(
-                    x509.SubjectAlternativeName(san_list),
-                    critical=False,
-                )
-                
-                # Sign CSR with private key
-                csr = csr_builder.sign(private_key, hashes.SHA256())
-                
-                # Serialize CSR to PEM format (newline-encoded)
-                csr_pem = csr.public_bytes(serialization.Encoding.PEM).decode('utf-8')
-                
-                print(f"✓ Generated CSR with {len(hostnames)} hostnames")
-                
-                # Create Origin CA certificate request
-                data = {
-                    "hostnames": hostnames,
-                    "requested_validity": 5475,  # 15 years in days
-                    "request_type": "origin-rsa",
-                    "csr": csr_pem  # Newline-encoded CSR
-                }
-                
-                response = requests.post(
-                    'https://api.cloudflare.com/client/v4/certificates',  # Origin CA endpoint
-                    headers=headers,
-                    json=data,
-                    timeout=30
-                )
-                
-                # Log detailed error if request fails
-                if not response.ok:
-                    error_detail = response.json() if response.text else {"status": response.status_code}
-                    print(f"✗ Certificate creation failed for {resource_group}")
-                    print(f"  Status: {response.status_code}")
-                    print(f"  Response: {error_detail}")
-                    raise RuntimeError(f"Failed to create certificate for {resource_group}: {error_detail}")
-                
-                response.raise_for_status()
-                
-                result = response.json()
-                if result.get('success'):
-                    cert_data = result['result']
-                    
-                    # Get certificate from Cloudflare response
-                    cloudflare_cert = cert_data.get('certificate')
-                    
-                    # Use our generated private key (Cloudflare doesn't return it)
-                    private_key_pem = private_key.private_bytes(
-                        encoding=serialization.Encoding.PEM,
-                        format=serialization.PrivateFormat.TraditionalOpenSSL,
-                        encryption_algorithm=serialization.NoEncryption()
-                    ).decode('utf-8')
-                    
-                    certificates[resource_group] = {
-                        'certificate': cloudflare_cert,
-                        'private_key': private_key_pem
-                    }
-                    print(f"✓ Created certificate for {resource_group}")
-                    print(f"  Hostnames: {', '.join(hostnames)}")
-                    print(f"  Certificate ID: {cert_data.get('id')}")
-                else:
-                    print(f"✗ Failed to create certificate: {result.get('errors')}")
-                    raise RuntimeError(f"Certificate creation failed for {resource_group}: {result.get('errors')}")
-        except requests.exceptions.RequestException as e:
-            print(f"✗ Network error with certificate for {resource_group}: {e}")
-            raise
-        except Exception as e:
-            print(f"✗ Error with certificate for {resource_group}: {e}")
-            raise
-    
-    return certificates
 
 # --------------------------------------------------
 # Step 2: Configure Clusters (Looping Logic)
@@ -342,13 +161,11 @@ def configure_clusters(**context):
             lines.append(f"edge01 ansible_host={cluster['edge']['public_ip']} ansible_user=ubuntu ansible_ssh_private_key_file={SSH_KEY_PATH}")
 
         # --- IMPORTANT: Variables for Dynamic Routing ---
-        resource_group = cluster.get('resource_group', 'rg')  # Use real resource group from database
+        resource_group = cluster.get("resource_group")
         lines.append("\n[all:vars]")
         lines.append(f"cluster_name={safe_name}")
-        # Used by the edge Traefik template to build host rules like:
-        # <app>-<cluster_name>.{{ rg }}.orchestronic.dev
-        lines.append(f"resource_group={cluster.get('resource_group')}")
-        lines.append(f"cluster_domain={safe_name}.orchestronic.dev") 
+        lines.append(f"cluster_domain={safe_name}.orchestronic.dev") # <--- Generates unique domain
+        lines.append(f"resource_group={resource_group}")
         
         with open(inventory_path, "w") as f:
             f.write("\n".join(lines))
@@ -366,7 +183,7 @@ def configure_clusters(**context):
         
         for pb in playbooks:
             pb_path = os.path.join(ANSIBLE_BASE, "playbooks", pb)
-            cmd = ["ansible-playbook", "-vvv", "-i", inventory_path, *ansible_extra_vars, pb_path]
+            cmd = ["ansible-playbook", "-vvv", "-i", inventory_path, pb_path]
             
             print(f"Running playbook: {pb} for {cluster['cluster_name']}")
             result = subprocess.run(cmd, env=env, cwd=ANSIBLE_BASE, capture_output=True, text=True)
@@ -384,104 +201,6 @@ def configure_clusters(**context):
                 print(f"SUCCESS: {pb}")
 
     print("All clusters configured successfully.")
-
-# --------------------------------------------------
-# Step 2.5: Create Cloudflare DNS Records
-# --------------------------------------------------
-def create_cloudflare_dns(**context):
-    """Create wildcard DNS for each cluster's edge VM"""
-    try:
-        import requests
-    except ImportError:
-        print("⚠️ requests module not installed, skipping DNS creation")
-        return
-    
-    load_dotenv(ENV_PATH)
-    
-    CF_API_TOKEN = os.getenv('CLOUDFLARE_API_TOKEN')
-    CF_API_KEY = os.getenv('CLOUDFLARE_API_KEY')
-    CF_ZONE_ID = os.getenv('CLOUDFLARE_ZONE_ID')
-    CF_EMAIL = os.getenv('CLOUDFLARE_EMAIL')
-    
-    if not CF_ZONE_ID or (not CF_API_TOKEN and not CF_API_KEY):
-        error_msg = "Cloudflare credentials not set. Set CLOUDFLARE_API_TOKEN or CLOUDFLARE_API_KEY + CLOUDFLARE_EMAIL"
-        print(f"✗ {error_msg}")
-        raise ValueError(error_msg)
-    
-    # Use API Token (preferred) or Global API Key
-    if CF_API_TOKEN:
-        headers = {
-            'Authorization': f'Bearer {CF_API_TOKEN}',
-            'Content-Type': 'application/json'
-        }
-    else:
-        headers = {
-            'X-Auth-Key': CF_API_KEY,
-            'X-Auth-Email': CF_EMAIL,
-            'Content-Type': 'application/json'
-        }
-    
-    clusters = context["ti"].xcom_pull(task_ids="fetch_cluster_info")
-    
-    # Group clusters by resource group and get edge IP for each
-    rg_to_edge = {}
-    for cluster in clusters:
-        resource_group = cluster.get('resource_group', 'rg')
-        edge_ip = cluster.get('edge', {}).get('public_ip')
-        if edge_ip and resource_group not in rg_to_edge:
-            rg_to_edge[resource_group] = edge_ip
-    
-    print(f"Creating DNS for {len(rg_to_edge)} unique resource groups")
-    
-    for resource_group, edge_ip in rg_to_edge.items():
-        record_name = f"*.{resource_group}"  # Matches URL pattern: app.resourcegroup.orchestronic.dev
-        full_domain = f"{record_name}.orchestronic.dev"
-        
-        data = {
-            "type": "A",
-            "name": record_name,
-            "content": edge_ip,
-            "ttl": 120,
-            "proxied": True  # Enable Cloudflare proxy for SSL
-        }
-        
-        try:
-            # Check if record exists
-            response = requests.get(
-                f'https://api.cloudflare.com/client/v4/zones/{CF_ZONE_ID}/dns_records?name={full_domain}',
-                headers=headers,
-                timeout=10
-            )
-            response.raise_for_status()
-            existing = response.json().get('result', [])
-            
-            if existing:
-                # Update existing record
-                record_id = existing[0]['id']
-                response = requests.put(
-                    f'https://api.cloudflare.com/client/v4/zones/{CF_ZONE_ID}/dns_records/{record_id}',
-                    headers=headers,
-                    json=data,
-                    timeout=10
-                )
-                response.raise_for_status()
-                print(f"✓ Updated DNS: {full_domain} → {edge_ip}")
-            else:
-                # Create new record
-                response = requests.post(
-                    f'https://api.cloudflare.com/client/v4/zones/{CF_ZONE_ID}/dns_records',
-                    headers=headers,
-                    json=data,
-                    timeout=10
-                )
-                response.raise_for_status()
-                print(f"✓ Created DNS: {full_domain} → {edge_ip}")
-        except requests.exceptions.RequestException as e:
-            print(f"✗ Network error creating DNS for {full_domain}: {e}")
-            raise
-        except Exception as e:
-            print(f"✗ Failed to create DNS for {full_domain}: {e}")
-            raise
 
 # --------------------------------------------------
 # Step 3: Fetch Kubeconfigs (Looping Logic)
@@ -549,7 +268,7 @@ with DAG(
     default_args=default_args,
     schedule_interval=None,
     catchup=False,
-    description="Configure K3s clusters dynamically with SSL",
+    description="Configure K3s clusters dynamically",
 ) as dag:
 
     fetch_info = PythonOperator(
@@ -557,19 +276,9 @@ with DAG(
         python_callable=fetch_cluster_info,
     )
 
-    generate_certs = PythonOperator(
-        task_id="generate_certificates",
-        python_callable=generate_cloudflare_origin_cert,
-    )
-
     configure_all = PythonOperator(
         task_id="configure_clusters",
         python_callable=configure_clusters,
-    )
-
-    create_dns = PythonOperator(
-        task_id="create_cloudflare_dns",
-        python_callable=create_cloudflare_dns,
     )
 
     store_configs = PythonOperator(
@@ -577,4 +286,4 @@ with DAG(
         python_callable=fetch_kubeconfigs,
     )
 
-    fetch_info >> generate_certs >> configure_all >> create_dns >> store_configs
+    fetch_info >> configure_all >> store_configs
