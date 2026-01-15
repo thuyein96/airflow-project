@@ -1,0 +1,6 @@
+# TLS Certificates (Cloudflare Origin Certificate)
+{% if cloudflare_origin_cert is defined and cloudflare_origin_key is defined %}
+[[tls.certificates]]
+  certFile = "/etc/traefik/origin-cert.pem"
+  keyFile = "/etc/traefik/origin-key.pem"
+{% endif %}

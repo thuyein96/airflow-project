@@ -2,24 +2,19 @@
 {% set rg = (resource_group | default('rg')) %}
 
 [http]
-  # Backend TLS on NodePort typically uses a default/self-signed cert.
-  # When the edge connects to https://<worker_private_ip>:30443 it may fail
-  # certificate validation unless we skip verification.
   [http.serversTransports.k3s_{{ ck }}_insecure]
     insecureSkipVerify = true
 
-  # ----------------------------------------------------------------
-  # Multi-cluster edge routing
-  # Supports both URL formats:
-  # 1. orchestronic.dev: <app>-<cluster_name>.rg.orchestronic.dev (DNS managed)
-  # 2. nip.io: <app>.<cluster_name>.<edge-ip>.nip.io (automatic DNS)
-  # ----------------------------------------------------------------
-  
-  # HTTP Router - supports both patterns
+  # HTTP Router - redirect to HTTPS
   [http.routers.to_k3s_{{ ck }}_ingress]
     entryPoints = ["web"]
-    rule = "HostRegexp(`{app:.+}-{{ cluster_name }}.{{ rg }}.orchestronic.dev`) || HostRegexp(`{app:.+}.{{ cluster_name }}.{ip:[0-9]+\\.[0-9]+\\.[0-9]+\\.[0-9]+}.nip.io`)"
+    rule = "HostRegexp(`{app:.+}-{{ cluster_name }}.{{ rg }}.orchestronic.dev`)"
+    middlewares = ["redirect-to-https"]
     service = "k3s_{{ ck }}_ingress_http"
+
+  [http.middlewares.redirect-to-https.redirectScheme]
+    scheme = "https"
+    permanent = true
 
   [http.services.k3s_{{ ck }}_ingress_http.loadBalancer]
     passHostHeader = true
@@ -28,12 +23,13 @@
       url = "http://{{ hostvars[host]['private_ip'] }}:{{ traefik_web_nodeport }}"
   {% endfor %}
 
-  # HTTPS Router - supports both patterns
+  # HTTPS Router
   [http.routers.to_k3s_{{ ck }}_ingress_secure]
     entryPoints = ["websecure"]
-    rule = "HostRegexp(`{app:.+}-{{ cluster_name }}.{{ rg }}.orchestronic.dev`) || HostRegexp(`{app:.+}.{{ cluster_name }}.{ip:[0-9]+\\.[0-9]+\\.[0-9]+\\.[0-9]+}.nip.io`)"
+    rule = "HostRegexp(`{app:.+}-{{ cluster_name }}.{{ rg }}.orchestronic.dev`)"
     service = "k3s_{{ ck }}_ingress_https"
     [http.routers.to_k3s_{{ ck }}_ingress_secure.tls]
+      # Certificate loaded from static config or tls.toml
 
   [http.services.k3s_{{ ck }}_ingress_https.loadBalancer]
     passHostHeader = true
