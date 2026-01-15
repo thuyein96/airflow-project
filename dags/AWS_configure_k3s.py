@@ -111,6 +111,7 @@ def fetch_cluster_info(**context):
             "master": endpoint,
             "workers": workers,
             "edge": edge,
+            "resource_group": resource_group,
         })
 
     return clusters_data
@@ -300,7 +301,6 @@ def generate_cloudflare_origin_cert(**context):
 # --------------------------------------------------
 def configure_clusters(**context):
     clusters = context["ti"].xcom_pull(task_ids="fetch_cluster_info")
-    certificates = context["ti"].xcom_pull(task_ids="generate_certificates") or {}
     
     # Iterate over every cluster and run Ansible sequentially
     for cluster in clusters:
@@ -345,20 +345,10 @@ def configure_clusters(**context):
         resource_group = cluster.get('resource_group', 'rg')  # Use real resource group from database
         lines.append("\n[all:vars]")
         lines.append(f"cluster_name={safe_name}")
-        lines.append(f"resource_group={resource_group}")  # Resource group for multi-cluster DNS
-        lines.append(f"edge_public_ip={edge_public_ip}")  # For nip.io fallback URLs
-        lines.append(f"cluster_domain={safe_name}.{resource_group}.orchestronic.dev")  # Full domain with resource group
-        
-        # Add SSL certificates if available (keyed by resource_group, not cluster name)
-        if resource_group in certificates:
-            cert_data = certificates[resource_group]
-            if cert_data.get('certificate') and cert_data.get('private_key'):
-                # Escape newlines for Ansible variable
-                cert_content = cert_data['certificate'].replace('\n', '\\n')
-                key_content = cert_data['private_key'].replace('\n', '\\n')
-                lines.append(f'cloudflare_origin_cert="{cert_content}"')
-                lines.append(f'cloudflare_origin_key="{key_content}"')
-                print(f"✓ SSL certificates added to inventory for {resource_group}")
+        # Used by the edge Traefik template to build host rules like:
+        # <app>-<cluster_name>.{{ rg }}.orchestronic.dev
+        lines.append(f"resource_group={cluster.get('resource_group')}")
+        lines.append(f"cluster_domain={safe_name}.orchestronic.dev") 
         
         with open(inventory_path, "w") as f:
             f.write("\n".join(lines))
@@ -376,7 +366,7 @@ def configure_clusters(**context):
         
         for pb in playbooks:
             pb_path = os.path.join(ANSIBLE_BASE, "playbooks", pb)
-            cmd = ["ansible-playbook", "-vvv", "-i", inventory_path, pb_path]
+            cmd = ["ansible-playbook", "-vvv", "-i", inventory_path, *ansible_extra_vars, pb_path]
             
             print(f"Running playbook: {pb} for {cluster['cluster_name']}")
             result = subprocess.run(cmd, env=env, cwd=ANSIBLE_BASE, capture_output=True, text=True)
