@@ -126,6 +126,16 @@ def generate_cloudflare_origin_cert(**context):
         print("✗ requests module not installed")
         raise RuntimeError("requests module is required for certificate generation. Install it with: pip install requests")
     
+    try:
+        from cryptography import x509
+        from cryptography.x509.oid import NameOID
+        from cryptography.hazmat.primitives import hashes
+        from cryptography.hazmat.primitives.asymmetric import rsa
+        from cryptography.hazmat.primitives import serialization
+    except ImportError:
+        print("✗ cryptography module not installed")
+        raise RuntimeError("cryptography module is required. Install it with: pip install cryptography")
+    
     load_dotenv(ENV_PATH)
     
     CF_API_TOKEN = os.getenv('CLOUDFLARE_API_TOKEN')
@@ -193,13 +203,46 @@ def generate_cloudflare_origin_cert(**context):
                         break
             
             if not existing_cert:
-                # Create new Origin CA certificate (auto-generate)
-                # Generate CSR data
+                # Generate private key and CSR
+                print(f"Generating CSR for {resource_group}...")
+                
+                # Generate private key
+                private_key = rsa.generate_private_key(
+                    public_exponent=65537,
+                    key_size=2048,
+                )
+                
+                # Build CSR
+                csr_builder = x509.CertificateSigningRequestBuilder()
+                csr_builder = csr_builder.subject_name(x509.Name([
+                    x509.NameAttribute(NameOID.COUNTRY_NAME, u"US"),
+                    x509.NameAttribute(NameOID.STATE_OR_PROVINCE_NAME, u"California"),
+                    x509.NameAttribute(NameOID.LOCALITY_NAME, u"San Francisco"),
+                    x509.NameAttribute(NameOID.ORGANIZATION_NAME, u"Orchestronic"),
+                    x509.NameAttribute(NameOID.COMMON_NAME, hostnames[0]),
+                ]))
+                
+                # Add SANs (Subject Alternative Names)
+                san_list = [x509.DNSName(hostname) for hostname in hostnames]
+                csr_builder = csr_builder.add_extension(
+                    x509.SubjectAlternativeName(san_list),
+                    critical=False,
+                )
+                
+                # Sign CSR with private key
+                csr = csr_builder.sign(private_key, hashes.SHA256())
+                
+                # Serialize CSR to PEM format (newline-encoded)
+                csr_pem = csr.public_bytes(serialization.Encoding.PEM).decode('utf-8')
+                
+                print(f"✓ Generated CSR with {len(hostnames)} hostnames")
+                
+                # Create Origin CA certificate request
                 data = {
                     "hostnames": hostnames,
                     "requested_validity": 5475,  # 15 years in days
                     "request_type": "origin-rsa",
-                    "csr": ""  # Empty CSR means Cloudflare generates it
+                    "csr": csr_pem  # Newline-encoded CSR
                 }
                 
                 response = requests.post(
@@ -222,9 +265,20 @@ def generate_cloudflare_origin_cert(**context):
                 result = response.json()
                 if result.get('success'):
                     cert_data = result['result']
+                    
+                    # Get certificate from Cloudflare response
+                    cloudflare_cert = cert_data.get('certificate')
+                    
+                    # Use our generated private key (Cloudflare doesn't return it)
+                    private_key_pem = private_key.private_bytes(
+                        encoding=serialization.Encoding.PEM,
+                        format=serialization.PrivateFormat.TraditionalOpenSSL,
+                        encryption_algorithm=serialization.NoEncryption()
+                    ).decode('utf-8')
+                    
                     certificates[resource_group] = {
-                        'certificate': cert_data.get('certificate'),
-                        'private_key': cert_data.get('private_key')
+                        'certificate': cloudflare_cert,
+                        'private_key': private_key_pem
                     }
                     print(f"✓ Created certificate for {resource_group}")
                     print(f"  Hostnames: {', '.join(hostnames)}")
