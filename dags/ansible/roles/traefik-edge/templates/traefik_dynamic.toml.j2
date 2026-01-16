@@ -24,17 +24,4 @@
   {% endfor %}
 
   # HTTPS Router
-  [http.routers.to_k3s_{{ ck }}_ingress_secure]
-    entryPoints = ["websecure"]
-    rule = "HostRegexp(`{app:.+}.{{ rg }}.orchestronic.dev`)"
-    service = "k3s_{{ ck }}_ingress_https"
-    [http.routers.to_k3s_{{ ck }}_ingress_secure.tls]
-      # Certificate loaded from static config or tls.toml
-
-  [http.services.k3s_{{ ck }}_ingress_https.loadBalancer]
-    passHostHeader = true
-    serversTransport = "k3s_{{ ck }}_insecure"
-  {% for host in groups['k3s_workers'] %}
-    [[http.services.k3s_{{ ck }}_ingress_https.loadBalancer.servers]]
-      url = "https://{{ hostvars[host]['private_ip'] }}:{{ traefik_websecure_nodeport }}"
-  {% endfor %}
+  
