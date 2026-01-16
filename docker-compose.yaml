@@ -324,7 +324,6 @@ services:
     image: nginx:alpine
     depends_on:
       - airflow-webserver
-      - rabbitmq
     ports:
       - "80:80"
     volumes:
