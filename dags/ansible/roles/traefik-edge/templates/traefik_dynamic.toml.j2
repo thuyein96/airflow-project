@@ -8,13 +8,8 @@
   # HTTP Router - redirect to HTTPS
   [http.routers.to_k3s_{{ ck }}_ingress]
     entryPoints = ["web"]
-    rule = "HostRegexp(`{app:.+}.{{ rg }}.orchestronic.dev`)"
-    middlewares = ["redirect-to-https"]
+    rule = "HostRegexp(`{app:.+}.{{ ck }}.{ip:([0-9]{1,3}-){3}[0-9]{1,3}}.nip.io`)"
     service = "k3s_{{ ck }}_ingress_http"
-
-  [http.middlewares.redirect-to-https.redirectScheme]
-    scheme = "https"
-    permanent = true
 
   [http.services.k3s_{{ ck }}_ingress_http.loadBalancer]
     passHostHeader = true
@@ -24,4 +19,17 @@
   {% endfor %}
 
   # HTTPS Router
-  
+  [http.routers.to_k3s_{{ ck }}_ingress_secure]
+    entryPoints = ["websecure"]
+    rule = "HostRegexp(`{app:.+}.{{ ck }}.{ip:([0-9]{1,3}-){3}[0-9]{1,3}}.nip.io`)"
+    service = "k3s_{{ ck }}_ingress_https"
+    [http.routers.to_k3s_{{ ck }}_ingress_secure.tls]
+      # Certificate loaded from static config or tls.toml
+
+  [http.services.k3s_{{ ck }}_ingress_https.loadBalancer]
+    passHostHeader = true
+    serversTransport = "k3s_{{ ck }}_insecure"
+  {% for host in groups['k3s_workers'] %}
+    [[http.services.k3s_{{ ck }}_ingress_https.loadBalancer.servers]]
+      url = "https://{{ hostvars[host]['private_ip'] }}:{{ traefik_websecure_nodeport }}"
+  {% endfor %}
