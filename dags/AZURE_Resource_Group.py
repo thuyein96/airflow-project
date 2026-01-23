@@ -164,10 +164,10 @@ def write_terraform_files(terraform_dir, configInfo):
 
     # terraform.auto.tfvars
     tfvars_content = f"""
-subscription_id      = "{os.getenv('AZURE_SUBSCRIPTION_ID')}"
-client_id            = "{os.getenv('AZURE_CLIENT_ID')}"
-client_secret        = "{os.getenv('AZURE_CLIENT_SECRET')}"
-tenant_id            = "{os.getenv('AZURE_TENANT_ID')}"
+subscription_id      = "{os.environ.get('AZURE_SUBSCRIPTION_ID')}"
+client_id            = "{os.environ.get('AZURE_CLIENT_ID')}"
+client_secret        = "{os.environ.get('AZURE_CLIENT_SECRET')}"
+tenant_id            = "{os.environ.get('AZURE_TENANT_ID')}"
 project_location     = "{config_dict['region']}"
 repoName             = "{config_dict['repoName'] + '-' + config_dict['resourcesId'][:4]}"
 """
