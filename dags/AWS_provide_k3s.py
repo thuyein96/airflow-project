@@ -318,7 +318,7 @@ resource "aws_instance" "k3s_master" {{
   for_each = {{ for cluster in var.k3s_clusters : cluster.id => cluster }}
   
   ami                    = data.aws_ami.ubuntu.id
-  instance_type          = "t3.medium"
+  instance_type          = "c7i-flex.large"
   iam_instance_profile   = aws_iam_instance_profile.k3s_profile.name
   subnet_id              = data.aws_subnet.k3s_public_subnet_0.id
   vpc_security_group_ids = [aws_security_group.k3s_sg.id]
