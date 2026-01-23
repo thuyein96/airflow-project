@@ -160,14 +160,28 @@ def create_terraform_directory(configInfo):
 def write_terraform_files(terraform_dir, configInfo):
     config_dict = json.loads(configInfo)
 
-    load_dotenv(expanduser('/opt/airflow/dags/.env'))
+    # Get from environment variables (no load_dotenv needed - Docker passes them)
+    subscription_id = os.environ.get('AZURE_SUBSCRIPTION_ID')
+    client_id = os.environ.get('AZURE_CLIENT_ID')
+    client_secret = os.environ.get('AZURE_CLIENT_SECRET')
+    tenant_id = os.environ.get('AZURE_TENANT_ID')
+
+    # Validate
+    if not all([subscription_id, client_id, client_secret, tenant_id]):
+        raise ValueError(
+            f"Missing Azure credentials. Found: "
+            f"subscription_id={bool(subscription_id)}, "
+            f"client_id={bool(client_id)}, "
+            f"client_secret={bool(client_secret)}, "
+            f"tenant_id={bool(tenant_id)}"
+        )
 
     # terraform.auto.tfvars
     tfvars_content = f"""
-subscription_id      = "{os.environ.get('AZURE_SUBSCRIPTION_ID')}"
-client_id            = "{os.environ.get('AZURE_CLIENT_ID')}"
-client_secret        = "{os.environ.get('AZURE_CLIENT_SECRET')}"
-tenant_id            = "{os.environ.get('AZURE_TENANT_ID')}"
+subscription_id      = "{subscription_id}"
+client_id            = "{client_id}"
+client_secret        = "{client_secret}"
+tenant_id            = "{tenant_id}"
 project_location     = "{config_dict['region']}"
 repoName             = "{config_dict['repoName'] + '-' + config_dict['resourcesId'][:4]}"
 """
