@@ -14,7 +14,7 @@
   insecure = true  # Be careful with this in production!
 
 [certificatesResolvers.letsencrypt.acme]
-  email = "{{ cloudflare_email }}"
+  email = "thuyein1996alpha@gmail.com"
   storage = "/letsencrypt/acme.json"
   [certificatesResolvers.letsencrypt.acme.dnsChallenge]
     provider = "cloudflare"
