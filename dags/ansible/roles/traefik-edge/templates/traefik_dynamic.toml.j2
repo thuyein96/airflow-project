@@ -8,8 +8,9 @@
   # ----------------------------------------------------------------
   [http.routers.to_k3s_{{ ck }}_ingress]
     entryPoints = ["web"]
-    rule = "HostRegexp(`{app:.+}.{{ cluster_name }}.{ip:[0-9]+\\.[0-9]+\\.[0-9]+\\.[0-9]+}.nip.io`)"
+    rule = "HostRegexp(`{app:.+}.{{ cluster_name }}.orchestronic.dev`)"
     service = "k3s_{{ ck }}_ingress_http"
+    middlewares = ["https-redirect"]
 
   [http.services.k3s_{{ ck }}_ingress_http.loadBalancer]
     passHostHeader = true
@@ -20,13 +21,17 @@
 
   [http.routers.to_k3s_{{ ck }}_ingress_secure]
     entryPoints = ["websecure"]
-    rule = "HostRegexp(`{app:.+}.{{ cluster_name }}.{ip:[0-9]+\\.[0-9]+\\.[0-9]+\\.[0-9]+}.nip.io`)"
-    service = "k3s_{{ ck }}_ingress_https"
+    rule = "HostRegexp(`{app:.+}.{{ cluster_name }}.orchestronic.dev`)"
+    service = "k3s_{{ ck }}_ingress_http"
     [http.routers.to_k3s_{{ ck }}_ingress_secure.tls]
+      certResolver = "letsencrypt"
+      [[http.routers.to_k3s_{{ ck }}_ingress_secure.tls.domains]]
+        main = "*.{{ cluster_name }}.orchestronic.dev"
+        sans = ["{{ cluster_name }}.orchestronic.dev"]
 
-  [http.services.k3s_{{ ck }}_ingress_https.loadBalancer]
-    passHostHeader = true
-  {% for host in groups['k3s_workers'] %}
-    [[http.services.k3s_{{ ck }}_ingress_https.loadBalancer.servers]]
-      url = "https://{{ hostvars[host]['private_ip'] }}:{{ traefik_websecure_nodeport }}"
-  {% endfor %}
+  # [http.services.k3s_{{ ck }}_ingress_https.loadBalancer]
+  #   passHostHeader = true
+  # {% for host in groups['k3s_workers'] %}
+  #   [[http.services.k3s_{{ ck }}_ingress_https.loadBalancer.servers]]
+  #    url = "https://{{ hostvars[host]['private_ip'] }}:{{ traefik_websecure_nodeport }}"
+  # {% endfor %}

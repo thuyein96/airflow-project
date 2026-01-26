@@ -12,3 +12,11 @@
 [api]
   dashboard = true
   insecure = true  # Be careful with this in production!
+
+[certificatesResolvers.letsencrypt.acme]
+  email = "{{ cloudflare_email }}"
+  storage = "/letsencrypt/acme.json"
+  [certificatesResolvers.letsencrypt.acme.dnsChallenge]
+    provider = "cloudflare"
+    delayBeforeCheck = 30
+    resolvers = ["1.1.1.1:53", "8.8.8.8:53"]
