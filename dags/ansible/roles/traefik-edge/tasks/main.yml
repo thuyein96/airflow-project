@@ -34,6 +34,12 @@
     state: directory
     mode: '0755'
 
+- name: Create ACME storage directory
+  file:
+    path: /etc/letsencrypt
+    state: directory
+    mode: '0755'
+
 # 3. Copy the static config file
 - name: Copy Static Configuration
   copy:
@@ -150,8 +156,7 @@
       -p 80:80 \
       -p 443:443 \
       -p 8080:8080 \
-      -e CF_API_EMAIL=thuyein1996alpha@gmail.com \
-      -e CF_API_KEY={{ cloudflare_api_key }} \
+      -e CF_DNS_API_TOKEN={{ cloudflare_api_key }} \
       -v /etc/traefik-edge/traefik.toml:/etc/traefik/traefik.toml \
       -v /etc/traefik-edge/dynamic:/etc/traefik/dynamic \
       -v /etc/letsencrypt:/letsencrypt \
