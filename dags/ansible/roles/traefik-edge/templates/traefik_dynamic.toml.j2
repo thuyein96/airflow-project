@@ -26,8 +26,8 @@
     [http.routers.to_k3s_{{ ck }}_ingress_secure.tls]
       certResolver = "letsencrypt"
       [[http.routers.to_k3s_{{ ck }}_ingress_secure.tls.domains]]
-        main = "*.{{ cluster_name }}.orchestronic.dev"
-        sans = ["{{ cluster_name }}.orchestronic.dev"]
+        main = "{{ cluster_name }}.orchestronic.dev"
+        sans = ["*.{{ cluster_name }}.orchestronic.dev"]
 
   # [http.services.k3s_{{ ck }}_ingress_https.loadBalancer]
   #   passHostHeader = true

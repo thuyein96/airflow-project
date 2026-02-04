@@ -40,6 +40,12 @@
     state: directory
     mode: '0755'
 
+- name: Create ACME storage file
+  file:
+    path: /etc/letsencrypt/acme.json
+    state: touch
+    mode: '0600'
+
 # 3. Copy the static config file
 - name: Copy Static Configuration
   copy:
@@ -157,8 +163,9 @@
       -p 443:443 \
       -p 8080:8080 \
       -e CF_DNS_API_TOKEN={{ cloudflare_api_key }} \
-      -v /etc/traefik-edge/traefik.toml:/etc/traefik/traefik.toml \
-      -v /etc/traefik-edge/dynamic:/etc/traefik/dynamic \
+      -e CF_ZONE_API_TOKEN={{ cloudflare_api_key }} \
+      -v /etc/traefik-edge/traefik.toml:/etc/traefik/traefik.toml:ro \
+      -v /etc/traefik-edge/dynamic:/etc/traefik/dynamic:ro \
       -v /etc/letsencrypt:/letsencrypt \
       traefik:v2.11
   register: traefik_edge_run
@@ -175,3 +182,23 @@
 - name: Print Traefik edge logs tail
   debug:
     msg: "{{ traefik_edge_logs.stdout_lines }}"
+
+- name: Verify Cloudflare API token is set in container
+  shell: docker exec traefik-edge env | grep -c CF_DNS_API_TOKEN || echo "0"
+  register: cf_token_check
+  changed_when: false
+
+- name: Show Cloudflare token status
+  debug:
+    msg: "Cloudflare API token {{ 'IS SET ✓' if cf_token_check.stdout | int > 0 else 'NOT SET ✗' }} in Traefik container"
+
+- name: Wait for certificate acquisition (check logs)
+  shell: docker logs traefik-edge 2>&1 | grep -i "certificate\|acme" | tail -20
+  register: cert_logs
+  changed_when: false
+  ignore_errors: yes
+
+- name: Show certificate acquisition logs
+  debug:
+    msg: "{{ cert_logs.stdout_lines }}"
+  when: cert_logs.stdout_lines is defined

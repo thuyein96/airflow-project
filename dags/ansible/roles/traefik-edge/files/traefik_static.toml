@@ -1,6 +1,10 @@
 [entryPoints]
   [entryPoints.web]
     address = ":80"
+    [entryPoints.web.http.redirections.entryPoint]
+      to = "websecure"
+      scheme = "https"
+  
   [entryPoints.websecure]
     address = ":443"
 
@@ -16,7 +20,13 @@
 [certificatesResolvers.letsencrypt.acme]
   email = "thuyein1996alpha@gmail.com"
   storage = "/letsencrypt/acme.json"
+  caServer = "https://acme-v02.api.letsencrypt.org/directory"
   [certificatesResolvers.letsencrypt.acme.dnsChallenge]
     provider = "cloudflare"
-    delayBeforeCheck = 30
-    resolvers = ["1.1.1.1:53", "8.8.8.8:53"]
+    delayBeforeCheck = 90
+    resolvers = ["1.1.1.1:53", "1.0.0.1:53"]
+
+[log]
+  level = "DEBUG"
+
+[accessLog]
